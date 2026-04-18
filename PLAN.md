@@ -721,10 +721,12 @@ The live end-to-end (`SHAMU_FLOW_LIVE=1`) smoke against real Claude + Codex CLIs
 - [x] Subscriptions: `issue-label-added`, `comment-created`, `status-changed` (typed discriminated union; other event types accepted with 202 so Linear stops retrying, but not surfaced to consumers)
 
 **Track 6.C — Work-intake conventions (Serial after 6.A + 6.B)**
-- [ ] Label conventions: `shamu:ready` → picked up; `shamu:in-progress` → working; `shamu:review` → awaiting human; `shamu:blocked` → escalated
-- [ ] Rolling-comment updater: one comment per run, edited in place with checkpoint appends
-- [ ] PR link as Linear attachment on completion
-- [ ] Escalation path: watchdog-trip → status flip to `shamu:blocked` + comment with incident summary
+- [x] Label conventions: `shamu:ready` → picked up; `shamu:in-progress` → working; `shamu:review` → awaiting human; `shamu:blocked` → escalated (landed as `createLabelStateMachine` in `@shamu/linear-integration`)
+- [x] Rolling-comment updater: one comment per run, edited in place with checkpoint appends (landed as `createRollingComment`)
+- [x] PR link as Linear attachment on completion (landed as `attachPrToIssue` + `shamu linear attach-pr` CLI; auto-attach-from-flow is a deferred followup — see 6.C.3 note below)
+- [x] Escalation path: watchdog-trip → status flip to `shamu:blocked` + comment with incident summary (landed as `createEscalationSink` + `createCiTripwire`/`createCiTripwireObserver` wiring via `@shamu/core-composition`; `EscalationCause` union extended with `"watchdog_agreement" | "lease_reclaim_refused" | "ci_tripwire"`)
+
+> **6.C.3 composition note (2026-04-18):** The daemon (`shamu linear serve`) wires every 6.C primitive into a running process — webhook server + pickup driver + escalation sink + per-pickup flow run + rolling-comment bridge + per-run CI tripwire. Composition lives in `apps/cli/` (services/linear-runtime.ts); `@shamu/linear-integration` stays primitive-only. `runFlowInProcess` was extracted from `shamu flow run` so the daemon reuses the engine in-process (no subprocess fork per pickup). Auto-attach of PR URLs on `PatchReady` is deferred because the canonical flow doesn't surface a PR URL in its node outputs today; 6.D uses `shamu linear attach-pr` manually.
 
 **Track 6.D — Integration test (Serial after 6.C)**
 - [ ] E2E against a throwaway Linear workspace: label → pickup → PR → status flip
