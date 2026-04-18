@@ -31,22 +31,26 @@
  *
  * Escalation-cause mapping:
  *
- *   Source                                            → Target
- *   ------------------------------------------------- | -----------------------
- *   watchdog.alert (any signal pair)                   → "policy_violation"
- *   mailbox.lease_reclaim_refused_dirty_holder         → "policy_violation"
- *   mailbox.lease_reclaim_refused_holder_missing       → "policy_violation"
+ *   Source                                            → Target cause
+ *   ------------------------------------------------- | ------------------------
+ *   watchdog.alert (any signal pair)                   → "watchdog_agreement"
+ *   mailbox.lease_reclaim_refused_*                    → "lease_reclaim_refused"
+ *   watchdog.ci_tripwire (per-role N-red streak)       → "ci_tripwire"
  *
- * The supervisor's `EscalationCause` enum today is
- * `"intensity_exceeded" | "start_failed" | "policy_violation"`. Neither
- * watchdog signals nor mailbox lease refusals are intensity or start
- * failures, so they land under `"policy_violation"` as a catch-all. This
- * is lossy — a downstream Linear sink can't tell a watchdog alert from a
- * mailbox dirty-holder from the cause alone; it has to read the
- * `reason` string. We flag a FOLLOWUP to extend `EscalationCause` with
- * `"watchdog_agreement"` and `"lease_reclaim_refused"` variants so the
- * target can switch on the shape; until then the shim preserves the
- * source detail in `reason` so no evidence is lost.
+ * Each of these is its own typed `EscalationCause` variant so downstream
+ * sinks (Phase 6.C Linear sink, CLI, TUI) can switch on the shape without
+ * parsing the `reason` string. The composition emitter does NOT emit the
+ * generic `"policy_violation"` cause — that remains a reserved catch-all
+ * for hand-authored callers layered above the supervisor.
+ *
+ * Tripwire channel — why `emitCiTripwire` is a distinct method, not
+ * routed through `emit`: PLAN §6 declares the CI tripwire structurally
+ * parallel to the agreement buffer, not a member of it (same-signal
+ * counter across runs, role-scoped; the buffer is cross-signal inside
+ * one run). The producer-side contract keeps the two channels separate
+ * at the `WatchdogEmitter` seam; the composition emitter preserves that
+ * separation here so a future sink can subscribe to tripwires without
+ * paying the cost of every agreement alert.
  *
  * Target routing:
  *
@@ -60,6 +64,9 @@
  *     decide; the role stopping surfaces that need). We preserve
  *     whatever the source event's `target` already says — the mailbox
  *     already classifies correctly, so this is a pass-through.
+ *   - WatchdogCiTripwire → `target: "role"`. The tripwire is role-scoped
+ *     by definition; a red streak for the executor should halt the
+ *     executor role, not the whole swarm.
  */
 
 import type { EventBus } from "@shamu/core-supervisor/bus";
@@ -68,7 +75,12 @@ import type {
   EscalationEmitter as MailboxEscalationEmitter,
   MailboxEscalationRaised,
 } from "@shamu/mailbox";
-import type { WatchdogAlert, WatchdogEmitter, WatchdogEvent } from "@shamu/watchdog";
+import type {
+  WatchdogAlert,
+  WatchdogCiTripwire,
+  WatchdogEmitter,
+  WatchdogEvent,
+} from "@shamu/watchdog";
 
 /**
  * Options for {@link createEscalationEmitter}.
@@ -123,9 +135,15 @@ export function createEscalationEmitter(opts: EscalationEmitterOptions): Escalat
     emit(event: WatchdogEvent): void {
       if (stopped) return;
       // Hints intentionally do not escalate. Only two-observation
-      // agreement alerts reach the supervisor bus.
+      // agreement alerts reach the supervisor bus via this entry point;
+      // tripwires arrive through `emitCiTripwire` below so the two
+      // channels stay structurally separated (PLAN §6).
       if (event.kind !== "watchdog.alert") return;
       supervisorBus.publish(translateWatchdogAlert(event, now()));
+    },
+    emitCiTripwire(event: WatchdogCiTripwire): void {
+      if (stopped) return;
+      supervisorBus.publish(translateCiTripwire(event, now()));
     },
   };
 
@@ -169,7 +187,7 @@ function translateWatchdogAlert(alert: WatchdogAlert, at: number): EscalationRai
     swarmId: null,
     roleId: alert.role,
     childId: alert.runId,
-    cause: "policy_violation",
+    cause: "watchdog_agreement",
     reason,
     // Prefer the alert's own wall-clock for replay fidelity; fall back
     // to the injected clock only if the alert didn't carry one.
@@ -184,9 +202,11 @@ function translateWatchdogAlert(alert: WatchdogAlert, at: number): EscalationRai
  * `EscalationRaised`.
  *
  * The mailbox event is already structurally compatible (same `kind`,
- * same field names). The only translation we do is collapse the
- * mailbox-specific cause enum into `"policy_violation"` and preserve
- * the original cause inside `reason` so the evidence lives on.
+ * same field names). The translation collapses the mailbox-specific
+ * cause enum (`lease_reclaim_refused_dirty_holder` /
+ * `lease_reclaim_refused_holder_missing`) into the supervisor's
+ * `"lease_reclaim_refused"` variant and preserves the original granular
+ * cause inside `reason` for downstream disambiguation.
  */
 function translateMailboxEscalation(event: MailboxEscalationRaised): EscalationRaised {
   return {
@@ -194,10 +214,54 @@ function translateMailboxEscalation(event: MailboxEscalationRaised): EscalationR
     swarmId: event.swarmId,
     roleId: event.roleId,
     childId: event.childId,
-    cause: "policy_violation",
+    cause: "lease_reclaim_refused",
     reason: `${event.reason} [mailbox_cause=${event.cause}]`,
     at: event.at,
     restartsInWindow: event.restartsInWindow,
     target: event.target,
+  };
+}
+
+/**
+ * Translate a `WatchdogCiTripwire` into the supervisor's
+ * `EscalationRaised`.
+ *
+ * - `swarmId`: null. The watchdog layer does not resolve swarm id (same
+ *   rationale as `translateWatchdogAlert`); a sink that needs it looks
+ *   up the runs referenced in `reason` against the run registry.
+ * - `childId`: the run that tripped the wire — the last (newest) runId
+ *   in the streak. If `runIds` is empty (defensive — the tripwire
+ *   producer guarantees at least `threshold` entries today), fall back
+ *   to the role name as a deterministic placeholder and annotate
+ *   `runCount=0` in the reason so the downstream operator can see the
+ *   shape was unexpected.
+ * - `reason`: the tripwire's own reason followed by a bracketed suffix
+ *   that renders the streak compactly — `<first>..<last>` for >1 run,
+ *   just the single id for exactly one.
+ * - `target`: always `"role"`. The tripwire is role-scoped by definition.
+ */
+function translateCiTripwire(event: WatchdogCiTripwire, at: number): EscalationRaised {
+  const runCount = event.runIds.length;
+  const last = runCount > 0 ? event.runIds[runCount - 1] : undefined;
+  const first = runCount > 0 ? event.runIds[0] : undefined;
+  const childId = last ?? event.role;
+  let streakLabel: string;
+  if (runCount === 0) {
+    streakLabel = "runCount=0";
+  } else if (runCount === 1) {
+    streakLabel = `runIds=${first} threshold=${event.threshold}`;
+  } else {
+    streakLabel = `runIds=${first}..${last} threshold=${event.threshold}`;
+  }
+  return {
+    kind: "escalation_raised",
+    swarmId: null,
+    roleId: event.role,
+    childId,
+    cause: "ci_tripwire",
+    reason: `${event.reason} [${streakLabel}]`,
+    at: event.at > 0 ? event.at : at,
+    restartsInWindow: 0,
+    target: "role",
   };
 }

@@ -17,7 +17,7 @@ import { EventBus } from "@shamu/core-supervisor/bus";
 import type { SupervisorEvent } from "@shamu/core-supervisor/events";
 import type { MailboxEscalationRaised } from "@shamu/mailbox";
 import type { RunId } from "@shamu/shared/ids";
-import type { WatchdogAlert, WatchdogHint } from "@shamu/watchdog";
+import type { WatchdogAlert, WatchdogCiTripwire, WatchdogHint } from "@shamu/watchdog";
 import { createEscalationEmitter } from "../src/escalation-emitter.ts";
 
 function makeBus(): EventBus<SupervisorEvent> {
@@ -76,7 +76,7 @@ describe("createEscalationEmitter — watchdog alerts", () => {
     if (!ev || ev.kind !== "escalation_raised") {
       throw new Error("Expected an escalation_raised event");
     }
-    expect(ev.cause).toBe("policy_violation");
+    expect(ev.cause).toBe("watchdog_agreement");
     expect(ev.target).toBe("role");
     expect(ev.roleId).toBe("executor");
     expect(ev.childId).toBe(RUN);
@@ -186,11 +186,11 @@ describe("createEscalationEmitter — mailbox escalations", () => {
     if (!ev || ev.kind !== "escalation_raised") {
       throw new Error("Expected an escalation_raised event");
     }
-    expect(ev.cause).toBe("policy_violation");
+    expect(ev.cause).toBe("lease_reclaim_refused");
     expect(ev.target).toBe("role");
     expect(ev.swarmId).toBe("swarm-a");
     expect(ev.childId).toBe("executor-1");
-    // Original cause preserved in reason for evidence.
+    // Original granular cause preserved in reason for evidence.
     expect(ev.reason).toContain("lease_reclaim_refused_dirty_holder");
     expect(ev.reason).toContain("uncommitted changes");
   });
@@ -313,5 +313,162 @@ describe("createEscalationEmitter — stop()", () => {
     });
 
     expect(received).toHaveLength(1);
+  });
+});
+
+describe("createEscalationEmitter — CI tripwire", () => {
+  const RUN_A = "01HZXRUN0000000000000000AA" as RunId;
+  const RUN_B = "01HZXRUN0000000000000000BB" as RunId;
+  const RUN_C = "01HZXRUN0000000000000000CC" as RunId;
+
+  it("forwards a WatchdogCiTripwire (threshold=3) as EscalationRaised with ci_tripwire cause", () => {
+    const bus = makeBus();
+    const received: SupervisorEvent[] = [];
+    bus.subscribe((ev) => received.push(ev));
+
+    const { watchdogEmitter } = createEscalationEmitter({ supervisorBus: bus });
+
+    const tripwire: WatchdogCiTripwire = {
+      kind: "watchdog.ci_tripwire",
+      role: "executor",
+      runIds: [RUN_A, RUN_B, RUN_C],
+      at: 1_700_000_000_000,
+      threshold: 3,
+      reason: "CI red streak: 3 consecutive failures for role executor",
+      detail: { workflow: "ci.yml" },
+    };
+
+    watchdogEmitter.emitCiTripwire?.(tripwire);
+
+    expect(received).toHaveLength(1);
+    const ev = received[0];
+    if (!ev || ev.kind !== "escalation_raised") {
+      throw new Error("Expected an escalation_raised event");
+    }
+    expect(ev.cause).toBe("ci_tripwire");
+    expect(ev.target).toBe("role");
+    expect(ev.roleId).toBe("executor");
+    expect(ev.swarmId).toBeNull();
+    // childId is the last (newest) run that tripped the wire.
+    expect(ev.childId).toBe(RUN_C);
+    expect(ev.restartsInWindow).toBe(0);
+    expect(ev.at).toBe(1_700_000_000_000);
+    // Evidence preserved: first..last streak and threshold embedded in reason.
+    expect(ev.reason).toContain(`runIds=${RUN_A}..${RUN_C}`);
+    expect(ev.reason).toContain("threshold=3");
+    expect(ev.reason).toContain("CI red streak");
+  });
+
+  it("threshold=1 path renders a single runId without the `..` range marker", () => {
+    const bus = makeBus();
+    const received: SupervisorEvent[] = [];
+    bus.subscribe((ev) => received.push(ev));
+
+    const { watchdogEmitter } = createEscalationEmitter({ supervisorBus: bus });
+
+    watchdogEmitter.emitCiTripwire?.({
+      kind: "watchdog.ci_tripwire",
+      role: "executor",
+      runIds: [RUN_A],
+      at: 1_700_000_000_000,
+      threshold: 1,
+      reason: "CI red streak: 1 consecutive failures for role executor",
+      detail: {},
+    });
+
+    const ev = received[0];
+    if (!ev || ev.kind !== "escalation_raised") {
+      throw new Error("Expected an escalation_raised event");
+    }
+    expect(ev.childId).toBe(RUN_A);
+    expect(ev.reason).toContain(`runIds=${RUN_A} threshold=1`);
+    expect(ev.reason).not.toContain("..");
+  });
+
+  it("defends against empty runIds — no throw, childId falls back to role, reason flags runCount=0", () => {
+    const bus = makeBus();
+    const received: SupervisorEvent[] = [];
+    bus.subscribe((ev) => received.push(ev));
+
+    const { watchdogEmitter } = createEscalationEmitter({ supervisorBus: bus });
+
+    expect(() =>
+      watchdogEmitter.emitCiTripwire?.({
+        kind: "watchdog.ci_tripwire",
+        role: "executor",
+        runIds: [],
+        at: 1_700_000_000_000,
+        threshold: 3,
+        reason: "malformed tripwire — empty runIds",
+        detail: {},
+      }),
+    ).not.toThrow();
+
+    expect(received).toHaveLength(1);
+    const ev = received[0];
+    if (!ev || ev.kind !== "escalation_raised") {
+      throw new Error("Expected an escalation_raised event");
+    }
+    expect(ev.childId).toBe("executor");
+    expect(ev.reason).toContain("runCount=0");
+  });
+
+  it("stop() makes emitCiTripwire a no-op", () => {
+    const bus = makeBus();
+    const received: SupervisorEvent[] = [];
+    bus.subscribe((ev) => received.push(ev));
+
+    const handle = createEscalationEmitter({ supervisorBus: bus });
+
+    handle.watchdogEmitter.emitCiTripwire?.({
+      kind: "watchdog.ci_tripwire",
+      role: "executor",
+      runIds: [RUN_A, RUN_B, RUN_C],
+      at: 1,
+      threshold: 3,
+      reason: "pre-stop",
+      detail: {},
+    });
+    expect(received).toHaveLength(1);
+
+    handle.stop();
+
+    handle.watchdogEmitter.emitCiTripwire?.({
+      kind: "watchdog.ci_tripwire",
+      role: "executor",
+      runIds: [RUN_A, RUN_B, RUN_C],
+      at: 2,
+      threshold: 3,
+      reason: "post-stop (should be dropped)",
+      detail: {},
+    });
+    expect(received).toHaveLength(1);
+  });
+
+  it("at <= 0 falls back to the injected now()", () => {
+    const bus = makeBus();
+    const received: SupervisorEvent[] = [];
+    bus.subscribe((ev) => received.push(ev));
+
+    const { watchdogEmitter } = createEscalationEmitter({
+      supervisorBus: bus,
+      now: () => 4242,
+    });
+
+    watchdogEmitter.emitCiTripwire?.({
+      kind: "watchdog.ci_tripwire",
+      role: "executor",
+      runIds: [RUN_A, RUN_B, RUN_C],
+      at: 0,
+      threshold: 3,
+      reason: "missing timestamp",
+      detail: {},
+    });
+
+    const ev = received[0];
+    if (!ev || ev.kind !== "escalation_raised") {
+      throw new Error("Expected escalation");
+    }
+    expect(ev.at).toBe(4242);
   });
 });

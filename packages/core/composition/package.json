@@ -17,6 +17,7 @@
     "clean": "rm -rf dist coverage .turbo"
   },
   "dependencies": {
+    "@shamu/core-flow": "workspace:*",
     "@shamu/core-supervisor": "workspace:*",
     "@shamu/mailbox": "workspace:*",
     "@shamu/persistence": "workspace:*",

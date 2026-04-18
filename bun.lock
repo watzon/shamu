@@ -89,6 +89,7 @@
       "name": "@shamu/core-composition",
       "version": "0.0.0",
       "dependencies": {
+        "@shamu/core-flow": "workspace:*",
         "@shamu/core-supervisor": "workspace:*",
         "@shamu/mailbox": "workspace:*",
         "@shamu/persistence": "workspace:*",

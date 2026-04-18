@@ -8,20 +8,36 @@
  * without paying the cost if they don't subscribe.
  *
  * Cause taxonomy:
- *   - "intensity_exceeded" — restart budget for this child tripped the
- *                            role's policy; no further restart attempted.
- *   - "start_failed"       — a factory rejected on first-start; treated as
- *                            an unrecoverable crash inside `start()`.
- *   - "policy_violation"   — reserved; the supervisor doesn't emit this
- *                            itself today, but flows/orchestrators layered
- *                            above may publish it on the same bus.
+ *   - "intensity_exceeded"    — restart budget for this child tripped the
+ *                               role's policy; no further restart attempted.
+ *   - "start_failed"          — a factory rejected on first-start; treated
+ *                               as an unrecoverable crash inside `start()`.
+ *   - "policy_violation"      — reserved catch-all; the supervisor and the
+ *                               composition escalation emitter do NOT emit
+ *                               this, but flows/orchestrators layered
+ *                               above may still publish it on the same
+ *                               bus for hand-authored policies that don't
+ *                               fit a more specific variant.
+ *   - "watchdog_agreement"    — two distinct watchdog signals reached
+ *                               agreement for one run (see
+ *                               `@shamu/watchdog` `WatchdogAlert`).
+ *   - "lease_reclaim_refused" — mailbox refused a stale-lease reclaim
+ *                               (dirty holder or missing worktree).
+ *   - "ci_tripwire"           — per-role CI red-streak tripwire fired (N
+ *                               consecutive red CI runs for one role).
  *
  * Keeping the cause a string-literal union (not a free string) is what
  * lets a downstream Linear sink switch on the shape without ad-hoc
  * parsing.
  */
 
-export type EscalationCause = "intensity_exceeded" | "start_failed" | "policy_violation";
+export type EscalationCause =
+  | "intensity_exceeded"
+  | "start_failed"
+  | "policy_violation"
+  | "watchdog_agreement"
+  | "lease_reclaim_refused"
+  | "ci_tripwire";
 
 /**
  * Published when a child cannot be restarted under its role's policy.
