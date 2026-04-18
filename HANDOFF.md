@@ -1,12 +1,12 @@
 # Shamu — Session Handoff
 
-**Last updated:** 2026-04-18 (Phase 6.C complete: 6.C.1 + 6.C.2 + 6.C.3 landed via PRs #6–#8; 6.D next).
+**Last updated:** 2026-04-18 (Phase 6 complete: 6.A–6.D all landed. Ready for Phase 7 kickoff.)
 
 Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) to get the full pipeline; this file is the snapshot of *where we are right now*.
 
 ## TL;DR
 
-Phase 6.C is fully landed. A new package (`@shamu/linear-integration`) + a new CLI command group (`shamu linear serve`, `shamu linear attach-pr`) ship the full label-state machine, rolling-comment updater, PR-attachment helper, webhook pickup driver, and escalation sink. The daemon picks up `shamu:ready` Linear issues, runs the canonical plan-execute-review flow in-process, drives a rolling comment from the flow's events, and flips labels on completion or escalation. Auto-PR-attach from the flow is a deferred followup (canonical flow doesn't emit a PR URL yet); 6.D uses `shamu linear attach-pr` manually.
+Phase 6 is fully landed. 6.C's orchestration primitives (label state machine, rolling comment, PR attachment, webhook pickup, escalation sink) + the `shamu linear serve` daemon work end-to-end against a real Linear workspace. Phase 6.D validated the exit criterion live on `WAT-6` in ~6.5 s (label → pickup → 3-node flow → `shamu:review` flip + rolling comment + PR attachment). Three polish items surfaced (rolling-comment race on terminal append, duplicate-nonce log spam, flow-module location discovery) — all non-blocking and tracked as followups. Full writeup in `docs/phase-6d/e2e-writeup.md`.
 
 - **Phase 6.C.1** (CI tripwire wiring) — PR **#6 → `7292500`**. `createCiTripwireObserver` in `@shamu/core-composition` bridges flow bus → watchdog tripwire; `createEscalationEmitter`'s `watchdogEmitter` now implements `emitCiTripwire` → `EscalationRaised` with `cause: "ci_tripwire"`. `EscalationCause` union extended with three typed variants so downstream sinks can switch on shape.
 - **Phase 6.C.2** (primitives) — PR **#7 → `2923602`**. New `@shamu/linear-integration` package: `createLabelStateMachine` / `createRollingComment` / `attachPrToIssue` / `createRunIssueRegistry` / `createPickupDriver` / `createEscalationSink` + scope-exception `LinearClient.createAttachment`.
@@ -31,7 +31,7 @@ Phase 6.C is fully landed. A new package (`@shamu/linear-integration`) + a new C
 | 3 | Supervisor, worktrees, mailbox, watchdog | ✅ 4/4 tracks |
 | 4 | Plan → Execute → Review flow + composition | ✅ 4/4 tracks |
 | 5 | agent-ci gate | ✅ 3/3 tracks; branch protection applied |
-| 6 | Linear integration | **6.A ✅ (#3) / 6.B ✅ (#4) / 6.C ✅ (#6 + #7 + #8) / 6.D ⬜** |
+| 6 | Linear integration | ✅ 6.A (#3) / 6.B (#4) / 6.C (#6 + #7 + #8) / 6.D (#10 — live E2E) |
 | 7 | Adapter fan-out + web dashboard + egress broker | ⬜ |
 | 8 | Autonomous mode + A2A + ops polish | ⬜ |
 
@@ -50,24 +50,30 @@ Phase 6.C is fully landed. A new package (`@shamu/linear-integration`) + a new C
 
 ## What's in flight
 
-Nothing. 6.C fully merged. 6.D not started.
+Nothing. Phase 6 complete. Next: Phase 7 kickoff (adapter fan-out + web dashboard + egress broker).
 
 ## Owed manual steps
 
 None.
 
-## Phase 6 remaining (from PLAN.md)
+## Phase 7 preview (from PLAN.md)
 
-**Track 6.D — Integration test (Serial after 6.C):**
-- E2E against a throwaway Linear workspace: label → pickup → PR → status flip.
-- Workflow: provision a test issue in a real Linear workspace; attach `shamu:ready`; start `shamu linear serve` locally + `shamu linear tunnel` for public ingress; watch for pickup → in-progress → review (or blocked). Use `shamu linear attach-pr` manually to simulate PR-opened completion since auto-attach-from-flow is a followup.
-- LINEAR_API_KEY + LINEAR_TEAM_ID + LINEAR_WEBHOOK_SECRET live in `.env` at repo root (gitignored).
+- **Tracks 7.A–7.F (Parallel):** six new adapters — `opencode`, `pi`, `cursor`, `gemini`, `amp`, `kimi`.
+- **Track 7.G (Serial after 7.A–7.F):** capability matrix + docs.
+- **Track 7.H (Parallel):** web dashboard (see UI plan task breakdown).
+- **Track 7.I (Parallel; must land by end of Phase 7):** `@shamu/egress-broker` network policy proxy.
 
-**Exit:** a Linear issue with `shamu:ready` gets picked up, worked, and ends with a PR link + status flip, entirely webhook-driven.
+Expected to be the biggest parallel fan of any phase.
 
-## Followups to absorb in 6.D / Phase 8 / later
+## Followups to absorb in Phase 7 / Phase 8 / later
 
-### From Phase 6.C.3 (new)
+### From Phase 6.D live E2E (new — 2026-04-18)
+
+1. **Rolling-comment race on terminal node append** (`@shamu/linear-integration/comments` + `apps/cli/src/services/linear-runtime.ts`) — the final node's `appendCheckpoint` races `finalize`; the review-node checkpoint is lost in the Linear-visible body because finalize's `updateComment` lands last. Fix: either await each append serially in the bridge, or switch to a single terminal `updateComment` that flushes the full transcript + summary. Non-blocking; summary line already correctly identifies terminal status.
+2. **Duplicate-nonce log spam** — Linear aggressively redelivers the same `webhookId` after a 202 response. The nonce-cache correctly dedupes; the log spam is noise. Throttle the `duplicate_nonce` warn to once per ID per ~10 s.
+3. **Flow-module resolution location footgun** — Bun's ESM loader uses the module's own directory for bare-specifier resolution. Flow modules loaded by absolute path must live under a workspace package's tree (we moved the stub from `scripts/` to `apps/cli/scripts/`). Could be softened by having the daemon resolve the module against the CLI's own workspace. Document in `shamu linear serve --help` at minimum.
+
+### From Phase 6.C.3 (still open)
 
 1. **Auto-attach PR URL from flow output** — the canonical flow doesn't surface a PR URL in its node outputs today. The hook would be: execute step pushes + runs `gh pr create` and includes the URL in its `NodeOutput.value`; the runtime subscribes to `node_completed` and calls `attachPrToIssue`. Ship as part of Phase 8.A or as a separate "flow emits PR URL" followup. 6.D uses `shamu linear attach-pr` manually.
 2. **CI-tripwire runId ↔ pickup runId mismatch** — the tripwire's `childId` is the newest runId in the streak, which may not match the current pickup's runId. The runtime's own failure-flip-to-blocked is a backstop so user-visible behavior is correct, but the escalation sink's comment may not fire for tripwire events unless the registry has the tripwire's last runId. Revisit in Phase 8.A with a richer "supervisor bus event references a runId not directly bound to the pickup" lookup.

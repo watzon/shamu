@@ -729,7 +729,7 @@ The live end-to-end (`SHAMU_FLOW_LIVE=1`) smoke against real Claude + Codex CLIs
 > **6.C.3 composition note (2026-04-18):** The daemon (`shamu linear serve`) wires every 6.C primitive into a running process — webhook server + pickup driver + escalation sink + per-pickup flow run + rolling-comment bridge + per-run CI tripwire. Composition lives in `apps/cli/` (services/linear-runtime.ts); `@shamu/linear-integration` stays primitive-only. `runFlowInProcess` was extracted from `shamu flow run` so the daemon reuses the engine in-process (no subprocess fork per pickup). Auto-attach of PR URLs on `PatchReady` is deferred because the canonical flow doesn't surface a PR URL in its node outputs today; 6.D uses `shamu linear attach-pr` manually.
 
 **Track 6.D — Integration test (Serial after 6.C)**
-- [ ] E2E against a throwaway Linear workspace: label → pickup → PR → status flip
+- [x] E2E against a throwaway Linear workspace: label → pickup → PR → status flip (ran 2026-04-18 against `WAT-6` in the `Watzon` workspace; ~6.5 s end-to-end. Full writeup in `docs/phase-6d/e2e-writeup.md`. Surfaced three polish items — rolling-comment race on terminal append, duplicate-nonce log spam, flow-module location discovery — tracked as HANDOFF followups.)
 
 **Exit:** a Linear issue with `shamu:ready` gets picked up, worked, and ends with a PR link + status flip, entirely webhook-driven.
 
