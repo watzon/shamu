@@ -1,12 +1,18 @@
 # Shamu — Session Handoff
 
-**Last updated:** 2026-04-18 (end of Phase 5).
+**Last updated:** 2026-04-18 (Phase 5 closed out; both owed manual steps done; cleared for Phase 6 kickoff).
 
 Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) to get the full pipeline; this file is the snapshot of *where we are right now*.
 
 ## TL;DR
 
-Phase 5 (agent-ci gate) is ✅ at the unit+integration layer. `@shamu/ci` lifts the Phase 0.D spike into production; the canonical flow now gates approval on green CI as a structural property (new `ci` DAG node, verdict schema extended with `requires_ci_rerun`, reviewer auto-overrides approve-on-red); the watchdog has a per-role CI-failure tripwire; a branch-protection script is ready for the user to apply. Phase 6 (Linear integration) is next. Two owed manual steps: (1) the Phase 4 `SHAMU_FLOW_LIVE=1` smoke still hasn't run, and (2) the user owns running `scripts/setup-branch-protection.sh` against the live repo. Nothing in flight. 15 workspace packages, 864 tests (+86 since end of Phase 4).
+Phase 5 (agent-ci gate) is ✅ at the unit+integration layer AND both previously-owed manual steps are green:
+
+- Phase 4.B `SHAMU_FLOW_LIVE=1` smoke ran and passed (scripted-green `__ciRunOverride` landed in `cc71897` so the scratch tmp dir doesn't have to be a git repo for CI bootstrap).
+- `scripts/setup-branch-protection.sh` applied against `watzon/shamu`. Verified: both rulesets `active`; classic protection on `main` has `required_status_checks=["CI / ubuntu-latest"]`, `required_signatures=true`, `required_linear_history=true`, `allow_force_pushes=false`, `required_approving_review_count=1`. SSH-key signing configured locally (`gpg.format=ssh`, `commit.gpgsign=true`) so subsequent commits meet the signed-commits rule.
+- `origin` remote set to `git@github.com:watzon/shamu.git` and all 38 commits pushed to `main` (initial push).
+
+`@shamu/ci` lifts the Phase 0.D spike into production; the canonical flow gates approval on green CI as a structural property (new `ci` DAG node, verdict schema extended with `requires_ci_rerun`, reviewer auto-overrides approve-on-red); the watchdog has a per-role CI-failure tripwire. Phase 6 (Linear integration) is next and unblocked. Nothing in flight. 15 workspace packages, 864 tests (+86 since end of Phase 4).
 
 ## Read-first order for a fresh session
 
@@ -23,9 +29,9 @@ Phase 5 (agent-ci gate) is ✅ at the unit+integration layer. `@shamu/ci` lifts 
 | 1 | Foundations | ✅ all 5 tracks |
 | 2 | Claude + Codex adapters | ✅ all 3 tracks |
 | 3 | Supervisor, worktrees, mailbox, watchdog | ✅ 4/4 tracks |
-| 4 | Plan → Execute → Review flow + composition | ✅ 4/4 tracks; one manual `SHAMU_FLOW_LIVE=1` smoke still owed |
-| 5 | agent-ci gate | ✅ 3/3 tracks (5.A/5.B/5.C); counter-wiring + branch-protection apply owed |
-| 6 | Linear integration | ⬜ next |
+| 4 | Plan → Execute → Review flow + composition | ✅ 4/4 tracks; live smoke ran green (`cc71897` override) |
+| 5 | agent-ci gate | ✅ 3/3 tracks (5.A/5.B/5.C); branch protection applied on `watzon/shamu`; CI-tripwire wiring still owed as Phase 6 followup #9 |
+| 6 | Linear integration | ⬜ next (cleared to start) |
 | 7 | Adapter fan-out + web dashboard + egress broker | ⬜ |
 | 8 | Autonomous mode + A2A + ops polish | ⬜ |
 
@@ -53,12 +59,14 @@ Phase 5 (agent-ci gate) is ✅ at the unit+integration layer. `@shamu/ci` lifts 
 
 ## What's in flight
 
-Nothing. Phase 5 fully committed (commits `bfee0c3`, `53b66c8`, `1318f06`).
+Nothing. Phase 5 fully committed (commits `bfee0c3`, `53b66c8`, `1318f06`, `f59e6eb`, plus the post-close Phase 5 followup `cc71897` smoke-override and two gitnexus banner refreshes).
 
 ## Owed manual steps
 
-1. **`SHAMU_FLOW_LIVE=1` smoke** (from Phase 4.B). `packages/flows/plan-execute-review/test/live/smoke.live.test.ts` is `describe.skipIf(!SHAMU_FLOW_LIVE)`. Requires authenticated Claude + Codex CLIs on the local laptop. Proves planner → executor → reviewer against real vendors + reviewer-internal revise loop. **Post-5.B note:** the DAG now includes a `ci` node, so the live smoke will also need `@redwoodjs/agent-ci` usable in the worktree OR the test must pass `__ciRunOverride` with a scripted green CI to bypass. Decide when scheduling the smoke; the test currently does not inject an override.
-2. **`scripts/setup-branch-protection.sh`** (from Phase 5.C). Applies rulesets + classic branch protection to `main` and `shamu/integration/*`. Precondition: `gh auth status` green and write access. Dry-run verified against `watzon/shamu`. The user runs this; the orchestrator does not mutate live GitHub state.
+None. Both prior owed steps are green:
+
+1. ~~Phase 4.B `SHAMU_FLOW_LIVE=1` smoke~~ — ran and passed after `cc71897` added a scripted-green `__ciRunOverride` so the scratch tmp dir doesn't need to be a git repo for agent-ci bootstrap. The "richer live gate smoke" (Phase 5.A followup #4) against real workflows is still a separate, lower-priority future exercise.
+2. ~~`scripts/setup-branch-protection.sh`~~ — applied against `watzon/shamu`. `origin` remote set to `git@github.com:watzon/shamu.git`; initial push of 38 commits landed; SSH-key signing configured locally so future commits to `main`/`shamu/integration/*` meet the `required_signatures` rule.
 
 ## Phase 6 plan (from PLAN.md)
 
