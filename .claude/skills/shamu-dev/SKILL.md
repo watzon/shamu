@@ -45,14 +45,18 @@ Each phase in PLAN.md has Tracks A, B, C… labeled **Parallel** or **Serial**. 
 - If the agent flagged a deviation from PLAN.md: either accept + fold into PLAN.md, or reject + re-spawn.
 - Spot-check key files. An agent's summary describes what it *intended* to do, not necessarily what it did.
 
-### Commit
-- Targeted `git add <specific files>`, never `-A` while sibling tracks are in flight.
-- One track per commit where possible.
-- Detailed commit body: what landed, why, notable decisions, followups for later phases.
-- Update PLAN.md checkboxes **in the same commit** the track is delivered in (tick as you go).
+### Commit + land (PR-based since Phase 5.C's branch protection)
+- `main` is protected: direct pushes are rejected. Every change lands via a feature branch + PR.
+- **Branch naming:** `shamu/<kind>/<slug>` — `<kind>` ∈ `{phase,chore,fix,docs}`. Examples: `shamu/phase/6a-linear-auth-client`, `shamu/chore/pr-workflow-adoption`.
+- Targeted `git add <specific files>` on the branch, never `-A` while sibling tracks are in flight.
+- One track per branch per PR where possible. Sibling tracks become sibling branches + sibling PRs.
+- Detailed commit body: what landed, why, notable decisions, followups for later phases. PR body summarizes the same, structured as `## Summary` + `## Test plan`.
+- Update PLAN.md checkboxes **in the same PR** the track is delivered in (tick as you go).
+- **Merge method: squash.** Classic protection enforces linear history; rebase-merges can't be auto-signed by GitHub and get rejected by `required_signatures`. Squash lets GitHub sign the resulting commit via web-flow.
+- **Self-merge is intended.** Ruleset has `required_approving_review_count: 0` by design (solo author + solo reviewer; see `scripts/setup-branch-protection.sh` rationale comment). The `ubuntu-latest` status check is the load-bearing quality bar.
 
 ### Close the phase
-- After all tracks commit, do a phase close-out commit:
+- After all track PRs merge, open a close-out PR:
   - Any PLAN.md section edits made in response to this phase's findings
   - HANDOFF.md refresh (status table, "next" section, followups)
 - Exit-criterion check against PLAN.md; if not met, the phase isn't done.
@@ -92,8 +96,9 @@ If any gate is red, do not commit. Fix or re-spawn.
 - **Body-heavy commits.** Subject ≤ 72 chars; body explains what, why, decisions, followups. `git log` is a secondary decision log — keep it useful.
 - **Never `--no-verify`, never `--no-gpg-sign`.** The gate is a wall, not a suggestion.
 - **Targeted `git add`.** `git add -A` is dangerous while parallel tracks are unfinished — you'll snapshot half-state.
-- **Never amend published commits.** Always a new commit.
+- **Never amend published commits.** Always a new commit. Amending pre-push commits to fix a missed signature is allowed (and in fact necessary when the signing config was absent at first commit time).
 - **No destructive git** (force-push, `reset --hard`, `branch -D`, `clean -f`) without explicit user approval.
+- **Signed commits.** Local setup: `gpg.format=ssh` + `user.signingkey=<path to public key>` + `commit.gpgsign=true`. The signing SSH key must be registered on GitHub as `--type signing` (separate from the auth SSH key). Verify on push with `git log -1 --show-signature`; `%G?=N` is a local-verification display quirk when `gpg.ssh.allowedSignersFile` is unset and does **not** mean the commit is unsigned — check the raw commit with `git cat-file commit HEAD | grep ^gpgsig` instead.
 
 ## Known recurring constraints
 

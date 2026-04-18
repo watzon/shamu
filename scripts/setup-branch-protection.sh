@@ -41,8 +41,20 @@
 
 set -euo pipefail
 
-REQUIRED_CHECK="CI / ubuntu-latest"
-REQUIRED_APPROVALS=1
+# Required status check context. GitHub Actions reports check-run names
+# as the job name (e.g. "ubuntu-latest") not the PR-UI-displayed form
+# (e.g. "CI / ubuntu-latest"). Rulesets compare against the raw check-run
+# name; using the UI form here silently disables the gate because no
+# check ever matches. Renaming the `ubuntu-latest` job in ci.yml breaks
+# this gate — edit both in the same PR.
+REQUIRED_CHECK="ubuntu-latest"
+# Solo maintainer + agent-swarm authoring means every PR has the same
+# author as the only reviewer; GitHub's default "author cannot self-review"
+# rule would deadlock every merge. The CI gate (required status check
+# above) remains the load-bearing quality bar; reviews are 0 by design,
+# not by accident. If a second reviewer joins the project, bump this to
+# >= 1 and re-run the script.
+REQUIRED_APPROVALS=0
 DRY_RUN=0
 REPO_ARG=""
 

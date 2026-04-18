@@ -1,6 +1,6 @@
 # Shamu — Session Handoff
 
-**Last updated:** 2026-04-18 (Phase 5 closed out; both owed manual steps done; cleared for Phase 6 kickoff).
+**Last updated:** 2026-04-18 (Phase 5 closed out; owed manual steps done; PR-based workflow in place; cleared for Phase 6 kickoff).
 
 Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) to get the full pipeline; this file is the snapshot of *where we are right now*.
 
@@ -9,8 +9,11 @@ Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu
 Phase 5 (agent-ci gate) is ✅ at the unit+integration layer AND both previously-owed manual steps are green:
 
 - Phase 4.B `SHAMU_FLOW_LIVE=1` smoke ran and passed (scripted-green `__ciRunOverride` landed in `cc71897` so the scratch tmp dir doesn't have to be a git repo for CI bootstrap).
-- `scripts/setup-branch-protection.sh` applied against `watzon/shamu`. Verified: both rulesets `active`; classic protection on `main` has `required_status_checks=["CI / ubuntu-latest"]`, `required_signatures=true`, `required_linear_history=true`, `allow_force_pushes=false`, `required_approving_review_count=1`. SSH-key signing configured locally (`gpg.format=ssh`, `commit.gpgsign=true`) so subsequent commits meet the signed-commits rule.
-- `origin` remote set to `git@github.com:watzon/shamu.git` and all 38 commits pushed to `main` (initial push).
+- `scripts/setup-branch-protection.sh` applied against `watzon/shamu`. Active protections on `main`: `required_status_checks=["ubuntu-latest"]` (see below on context-name fix), `required_signatures=true`, `required_linear_history=true`, `allow_force_pushes=false`, `required_approving_review_count=0` (see below on self-review). SSH-key signing configured locally (`gpg.format=ssh`, `commit.gpgsign=true`, key registered as `--type signing` on GitHub) so all future commits satisfy `required_signatures`.
+- `origin` set to `git@github.com:watzon/shamu.git`; initial push of 38 commits landed as the main-branch history.
+- **Adoption artifacts (PR #1 and PR #2):** the first attempted push through the now-protected `main` surfaced two script bugs that PR #2 also fixed in-place: (1) the required-status-check context was set to `"CI / ubuntu-latest"` (the PR UI display name), but GitHub Actions reports the check-run name as just `"ubuntu-latest"` — the load-bearing gate was never actually matching any check, so "required_status_checks" was de-facto silently off. Script now uses `"ubuntu-latest"`; (2) `required_approving_review_count=1` deadlocks a solo-author-plus-solo-reviewer repo (GitHub blocks self-approval by default). Script now uses `0` with a rationale comment; the `ubuntu-latest` check is the real quality bar.
+
+**Workflow note:** `main` is protected. All future changes land via feature branch → PR → squash-merge (rebase-merges can't be auto-signed by GitHub and fail `required_signatures`). See the `shamu-dev` skill's "Commit + land" section for the updated pipeline.
 
 `@shamu/ci` lifts the Phase 0.D spike into production; the canonical flow gates approval on green CI as a structural property (new `ci` DAG node, verdict schema extended with `requires_ci_rerun`, reviewer auto-overrides approve-on-red); the watchdog has a per-role CI-failure tripwire. Phase 6 (Linear integration) is next and unblocked. Nothing in flight. 15 workspace packages, 864 tests (+86 since end of Phase 4).
 
