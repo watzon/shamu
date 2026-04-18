@@ -24,10 +24,15 @@
     "@shamu/adapter-codex": "workspace:*",
     "@shamu/adapter-echo": "workspace:*",
     "@shamu/adapters-base": "workspace:*",
+    "@shamu/core-composition": "workspace:*",
     "@shamu/core-flow": "workspace:*",
+    "@shamu/core-supervisor": "workspace:*",
+    "@shamu/linear-client": "workspace:*",
+    "@shamu/linear-integration": "workspace:*",
     "@shamu/linear-webhook": "workspace:*",
     "@shamu/persistence": "workspace:*",
     "@shamu/shared": "workspace:*",
+    "@shamu/watchdog": "workspace:*",
     "citty": "0.1.6",
     "zod": "4.1.13"
   }

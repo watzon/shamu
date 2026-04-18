@@ -3,47 +3,39 @@
  *
  * Track 4.C glue between the 4.A flow engine and 4.B (or any externally
  * authored) flow module. The spec-form is deliberately permissive: a
- * bare workspace package name OR a path to a `.ts`/`.js` file. This lets
- * users write one-off flows as local scripts while the canonical flow
- * (4.B) ships as `@shamu/flows-plan-execute-review`.
+ * bare workspace package name OR a path to a `.ts`/`.js` file.
  *
- * Behavior highlights:
- *   - Mints a fresh WorkflowRunId via the shared ULID factory (G8 —
- *     orchestrator owns the id).
- *   - Persists `flow_runs` rows on every terminal / gate event so a crash
- *     mid-flow leaves enough in the DB to resume.
- *   - JSON-mode emits newline-delimited events exactly mirroring the
- *     internal FlowEvent bus, with a `ts` field copied from the event's
- *     `at`. Human mode emits one short summary line per event.
- *   - Exit codes:
- *       succeeded → 0 (OK)
- *       paused    → 2 (USAGE — a paused flow needs caller attention; no
- *                   dedicated code in the taxonomy yet, and USAGE is the
- *                   closest "the human has to act" signal. Track 4.C
- *                   explicitly asks for 2 here.)
- *       failed    → 10 (RUN_FAILED)
- *   - --resume <id>: loads the prior flow_runs row, deserializes
- *     state_json, and threads it through `FlowEngine.run({ resumeFrom })`.
+ * Phase 6.C.3: the engine-run core was extracted to
+ * `apps/cli/src/services/flow-runner.ts` so the Linear daemon can reuse
+ * it without forking a subprocess. This command handler retains every
+ * external contract byte-identically:
+ *
+ *   - Mints a fresh WorkflowRunId if `--resume` is absent.
+ *   - Persists `flow_runs` rows on every terminal / gate event.
+ *   - JSON-mode emits newline-delimited events mirroring the bus.
+ *   - Human mode emits one short summary line per event.
+ *   - Exit codes: succeeded → 0, paused → 2 (USAGE), failed → 10
+ *     (RUN_FAILED). Per Track 4.C.
+ *   - `--resume <id>` loads the prior flow_runs row + threads state.
+ *   - SIGINT / SIGTERM abort the run cleanly.
  */
 
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import type { FlowEvent, FlowRunState } from "@shamu/core-flow";
-import { deserialize, EventBus, FlowEngine, RunnerRegistry, serialize } from "@shamu/core-flow";
+import type { FlowEvent } from "@shamu/core-flow";
+import { EventBus } from "@shamu/core-flow";
 import type { ShamuDatabase } from "@shamu/persistence";
-import * as flowRunsQueries from "@shamu/persistence/queries/flow-runs";
-import { workflowRunId as brandWorkflowRunId, newWorkflowRunId } from "@shamu/shared";
+import { workflowRunId as brandWorkflowRunId } from "@shamu/shared";
 import { defineCommand } from "citty";
 import { ExitCode, type ExitCodeValue } from "../../exit-codes.ts";
-import { writeDiag, writeHuman, writeJson } from "../../output.ts";
+import { writeDiag } from "../../output.ts";
+import {
+  FlowRunnerUsageError,
+  type FlowTerminalStatus,
+  runFlowInProcess,
+} from "../../services/flow-runner.ts";
 import { openRunDatabase } from "../../services/run-db.ts";
 import { commonArgs, done, outputMode, withServices } from "../_shared.ts";
-import {
-  type FlowModule,
-  FlowModuleContractError,
-  loadFlowModule,
-  type RegisterRunnersOptions,
-} from "../flow-contract.ts";
 
 export const flowRunCommand = defineCommand({
   meta: {
@@ -109,9 +101,8 @@ export const flowRunCommand = defineCommand({
       return done(ExitCode.USAGE);
     }
 
-    // --flow-opt is repeatable; citty surfaces repeats as an array OR a
-    // single string depending on the invocation. `rawArgs` is the stable
-    // source of truth — harvest every occurrence and accumulate.
+    // --flow-opt is repeatable; citty collapses repeats into array or
+    // scalar depending on invocation. `rawArgs` is the stable source.
     const flowOpts = collectFlowOpts(rawArgs);
     const workspaceCwd = (args.cwd as string | undefined) ?? process.cwd();
 
@@ -122,8 +113,8 @@ export const flowRunCommand = defineCommand({
       return done(ExitCode.USAGE);
     }
 
-    // Open the DB first — we want a clean USAGE exit if the state dir
-    // can't be created, without having loaded the flow module.
+    // Open the DB first — want a clean USAGE exit if the state dir can't
+    // be created, without having loaded the flow module.
     const dbPath = args.db as string | undefined;
     const stateDir = args["state-dir"] as string | undefined;
     let db: ShamuDatabase;
@@ -141,234 +132,45 @@ export const flowRunCommand = defineCommand({
       return done(ExitCode.INTERNAL);
     }
 
-    let flowModule: FlowModule;
-    try {
-      flowModule = await loadFlowModule(spec);
-    } catch (err) {
-      if (err instanceof FlowModuleContractError) {
-        writeDiag(`flow run: ${err.message}`);
-      } else {
-        const message = err instanceof Error ? err.message : String(err);
-        writeDiag(`flow run: failed to load module '${spec}': ${message}`);
-      }
-      try {
-        db.close();
-      } catch {
-        // best-effort close; don't mask the failure.
-      }
-      return done(ExitCode.USAGE);
-    }
+    const logger = svc.services.logger;
+    const resumeArg = args.resume as string | undefined;
+    const resumeFlowRunId =
+      resumeArg !== undefined && resumeArg.length > 0 ? brandWorkflowRunId(resumeArg) : null;
 
-    // Combine options: parseOptions (module-specific) overrides the
-    // max-iterations default; if the module does not export parseOptions,
-    // max-iterations lands directly on RegisterRunnersOptions.
-    let parseOpts: Partial<RegisterRunnersOptions> = {};
-    if (flowModule.parseOptions !== undefined) {
-      try {
-        const combined = { ...flowOpts };
-        if (maxIterationsParsed.value !== null) {
-          combined.maxIterations = String(maxIterationsParsed.value);
-        }
-        parseOpts = flowModule.parseOptions(combined);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        writeDiag(`flow run: parseOptions threw: ${message}`);
-        try {
-          db.close();
-        } catch {
-          // best-effort
-        }
+    // Command handler owns the bus + SIGINT/SIGTERM wiring; the service
+    // just wires its own sinks onto whatever bus the caller hands it.
+    const bus = new EventBus<FlowEvent>();
+    const controller = new AbortController();
+    const onSigint = (): void => controller.abort();
+    process.on("SIGINT", onSigint);
+    process.on("SIGTERM", onSigint);
+
+    try {
+      const outcome = await runFlowInProcess({
+        moduleSpec: spec,
+        task,
+        workspaceCwd,
+        flowOpts,
+        maxIterations: maxIterationsParsed.value,
+        resumeFlowRunId,
+        db,
+        logger,
+        flowBus: bus,
+        signal: controller.signal,
+        outputMode: mode,
+      });
+      return done(exitCodeFor(outcome.status));
+    } catch (err) {
+      if (err instanceof FlowRunnerUsageError) {
+        writeDiag(`flow run: ${err.message}`);
         return done(ExitCode.USAGE);
       }
-    } else if (maxIterationsParsed.value !== null) {
-      parseOpts = { maxIterations: maxIterationsParsed.value };
-    }
-    const registerOpts: RegisterRunnersOptions = {
-      workspaceCwd,
-      ...parseOpts,
-    };
-
-    const logger = svc.services.logger;
-
-    try {
-      // Resume path: load the prior row and deserialize its state. The
-      // flowRunId the engine sees on resume stays the SAME as the stored
-      // id (we're appending progress to the same SQLite row). Minting a
-      // new id on resume would orphan the prior state.
-      let resumeFrom: FlowRunState | null = null;
-      let flowRunId = newWorkflowRunId();
-      const resumeArg = args.resume as string | undefined;
-      if (resumeArg !== undefined && resumeArg.length > 0) {
-        const priorId = brandWorkflowRunId(resumeArg);
-        const row = flowRunsQueries.getFlowRun(db, priorId);
-        if (!row) {
-          writeDiag(`flow run: --resume '${resumeArg}' not found in flow_runs`);
-          try {
-            db.close();
-          } catch {
-            // best-effort
-          }
-          return done(ExitCode.USAGE);
-        }
-        try {
-          resumeFrom = deserialize(row.stateJson);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          writeDiag(`flow run: failed to deserialize prior state: ${message}`);
-          try {
-            db.close();
-          } catch {
-            // best-effort
-          }
-          return done(ExitCode.INTERNAL);
-        }
-        flowRunId = priorId;
-      }
-
-      const registry = new RunnerRegistry();
-      try {
-        flowModule.registerRunners(registry, registerOpts);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        writeDiag(`flow run: registerRunners threw: ${message}`);
-        try {
-          db.close();
-        } catch {
-          // best-effort
-        }
-        return done(ExitCode.INTERNAL);
-      }
-
-      const bus = new EventBus<FlowEvent>();
-      let latestState: FlowRunState | null = resumeFrom;
-      let flowRowCreated = resumeFrom !== null;
-
-      // Logger + JSON sink. We subscribe BEFORE invoking engine.run so
-      // the flow_started event is captured.
-      const sinkDispose = bus.subscribe((ev) => {
-        logger.info(`flow: ${ev.kind}`, {
-          flowRunId: ev.flowRunId,
-          ...eventLogContext(ev),
-        });
-        if (mode === "json") {
-          process.stdout.write(`${JSON.stringify(toJsonEvent(ev))}\n`);
-        } else {
-          writeHuman(mode, formatFlowEventLine(ev));
-        }
-      });
-
-      // Persistence sink: write flow_runs rows on lifecycle transitions.
-      const persistDispose = bus.subscribe((ev) => {
-        try {
-          if (ev.kind === "flow_started") {
-            if (!flowRowCreated) {
-              flowRunsQueries.insertFlowRun(db, {
-                flowRunId: ev.flowRunId,
-                flowId: ev.flowId,
-                dagVersion: ev.version,
-                status: "running",
-                stateJson: serialize(
-                  latestState ?? {
-                    flowRunId: ev.flowRunId,
-                    flowId: ev.flowId,
-                    version: ev.version,
-                    entry: flowModule.flowDefinition.entry,
-                    nodeStatus: {},
-                    nodeOutputs: {},
-                    pendingGate: null,
-                    startedAt: ev.at,
-                    updatedAt: ev.at,
-                    totalCostUsd: null,
-                    costSamples: [],
-                  },
-                ),
-                resumedFrom: ev.resumedFrom,
-                startedAt: ev.at,
-              });
-              flowRowCreated = true;
-            }
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          writeDiag(`flow run: persistence failure on ${ev.kind}: ${message}`);
-        }
-      });
-
-      const engine = new FlowEngine({ registry, bus });
-      const controller = new AbortController();
-      const onSigint = (): void => controller.abort();
-      process.on("SIGINT", onSigint);
-      process.on("SIGTERM", onSigint);
-
-      try {
-        const finalState = await engine.run(flowModule.flowDefinition, {
-          flowRunId,
-          initialInputs: { task },
-          ...(resumeFrom !== null ? { resumeFrom } : {}),
-          signal: controller.signal,
-        });
-        latestState = finalState;
-      } finally {
-        process.off("SIGINT", onSigint);
-        process.off("SIGTERM", onSigint);
-        sinkDispose();
-        persistDispose();
-      }
-
-      // Determine terminal status from final state + most recent event. The
-      // engine emits a `flow_completed` which is the authoritative signal;
-      // by the time we return, that's already been fed through the sinks,
-      // so we rely on the state's own indicators.
-      const terminalStatus = deriveTerminalStatus(latestState);
-
-      // Flush final state + status to SQLite. `updateFlowRunState` is a
-      // no-op if the row wasn't created (defensive — if flow_started was
-      // lost somehow, we still want the run visible).
-      if (latestState !== null) {
-        try {
-          if (!flowRowCreated) {
-            flowRunsQueries.insertFlowRun(db, {
-              flowRunId: latestState.flowRunId,
-              flowId: latestState.flowId,
-              dagVersion: latestState.version,
-              status: terminalStatus,
-              stateJson: serialize(latestState),
-              resumedFrom: null,
-              startedAt: latestState.startedAt,
-            });
-            flowRowCreated = true;
-          } else {
-            flowRunsQueries.updateFlowRunState(
-              db,
-              latestState.flowRunId,
-              terminalStatus,
-              serialize(latestState),
-              Date.now(),
-            );
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          writeDiag(`flow run: failed to flush final state: ${message}`);
-        }
-      }
-
-      writeJson(mode, {
-        kind: "flow-run-summary",
-        flowRunId,
-        status: terminalStatus,
-        totalCostUsd: latestState?.totalCostUsd ?? null,
-      });
-      writeHuman(
-        mode,
-        `flow ${flowRunId} ${terminalStatus} (cost=${latestState?.totalCostUsd ?? "null"})`,
-      );
-
-      return done(exitCodeFor(terminalStatus));
-    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       writeDiag(`flow run: ${message}`);
       return done(ExitCode.INTERNAL);
     } finally {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigint);
       try {
         db.close();
       } catch {
@@ -404,7 +206,7 @@ function parseMaxIterations(raw: string | undefined): MaxIterationsResult {
 
 /**
  * Scan rawArgs for every `--flow-opt key=value` pair. citty collapses
- * repeated flags; rawArgs is the stable source of truth here.
+ * repeated flags; rawArgs is the stable source of truth.
  */
 function collectFlowOpts(rawArgs: readonly string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -432,117 +234,15 @@ function collectFlowOpts(rawArgs: readonly string[]): Record<string, string> {
   return out;
 }
 
-function deriveTerminalStatus(state: FlowRunState | null): "succeeded" | "failed" | "paused" {
-  if (state === null) return "failed";
-  if (state.pendingGate !== null) return "paused";
-  // If any node failed, flow failed. If any is still running/pending, we
-  // treat it as failed too (engine should never leave partial state on a
-  // normal return — belt + suspenders).
-  for (const status of Object.values(state.nodeStatus)) {
-    if (status === "failed") return "failed";
-    if (status === "running" || status === "pending") return "failed";
-    if (status === "paused") return "paused";
-  }
-  return "succeeded";
-}
-
-function exitCodeFor(status: "succeeded" | "failed" | "paused"): ExitCodeValue {
+function exitCodeFor(status: FlowTerminalStatus): ExitCodeValue {
   if (status === "succeeded") return ExitCode.OK;
   if (status === "paused") return ExitCode.USAGE;
   return ExitCode.RUN_FAILED;
 }
 
 /**
- * Strip the `kind` discriminator so JSON listeners get a typed envelope
- * `{ ts, kind, flowRunId, payload }` rather than the raw union shape.
- * Per the 4.C spec.
- */
-function toJsonEvent(ev: FlowEvent): {
-  readonly ts: number;
-  readonly kind: string;
-  readonly flowRunId: string;
-  readonly payload: Record<string, unknown>;
-} {
-  // Destructure out the fields we surface as top-level; the rest becomes
-  // `payload`. Done per-kind so the engine's field names are preserved
-  // verbatim.
-  switch (ev.kind) {
-    case "flow_started": {
-      const { kind, at, flowRunId, ...rest } = ev;
-      return { ts: at, kind, flowRunId, payload: rest };
-    }
-    case "node_started": {
-      const { kind, at, flowRunId, ...rest } = ev;
-      return { ts: at, kind, flowRunId, payload: rest };
-    }
-    case "node_completed": {
-      const { kind, at, flowRunId, ...rest } = ev;
-      return { ts: at, kind, flowRunId, payload: rest };
-    }
-    case "node_failed": {
-      const { kind, at, flowRunId, ...rest } = ev;
-      return { ts: at, kind, flowRunId, payload: rest };
-    }
-    case "human_gate_reached": {
-      const { kind, at, flowRunId, ...rest } = ev;
-      return { ts: at, kind, flowRunId, payload: rest };
-    }
-    case "flow_completed": {
-      const { kind, at, flowRunId, ...rest } = ev;
-      return { ts: at, kind, flowRunId, payload: rest };
-    }
-  }
-}
-
-function formatFlowEventLine(ev: FlowEvent): string {
-  const head = `[flow ${ev.flowRunId}] ${ev.kind}`;
-  switch (ev.kind) {
-    case "flow_started":
-      return `${head} flowId=${ev.flowId} v=${ev.version}`;
-    case "node_started":
-      return `${head} node=${ev.nodeId} attempt=${ev.attempt}${ev.role ? ` role=${ev.role}` : ""}`;
-    case "node_completed":
-      return `${head} node=${ev.nodeId} ok=${ev.output.ok} cached=${ev.cached} dur=${ev.durationMs}ms cost=${ev.output.costUsd ?? "null"}`;
-    case "node_failed":
-      return `${head} node=${ev.nodeId} retriable=${ev.error.retriable} willRetry=${ev.willRetry}: ${ev.error.message}`;
-    case "human_gate_reached":
-      return `${head} node=${ev.nodeId} resumeToken=${ev.resumeToken}`;
-    case "flow_completed":
-      return `${head} status=${ev.status} cost=${ev.totalCostUsd ?? "null"} nodes=${ev.nodeCount}`;
-  }
-}
-
-/**
- * Build a structured logger context for a flow event. Keeps the contract
- * with `@shamu/shared/logger` uniform: no bare event-object dumps.
- */
-function eventLogContext(ev: FlowEvent): Record<string, unknown> {
-  switch (ev.kind) {
-    case "flow_started":
-      return { flowId: ev.flowId, version: ev.version, resumedFrom: ev.resumedFrom };
-    case "node_started":
-      return { nodeId: ev.nodeId, attempt: ev.attempt };
-    case "node_completed":
-      return { nodeId: ev.nodeId, cached: ev.cached, ok: ev.output.ok, durationMs: ev.durationMs };
-    case "node_failed":
-      return { nodeId: ev.nodeId, retriable: ev.error.retriable, willRetry: ev.willRetry };
-    case "human_gate_reached":
-      return { nodeId: ev.nodeId, resumeToken: ev.resumeToken };
-    case "flow_completed":
-      return {
-        status: ev.status,
-        totalCostUsd: ev.totalCostUsd,
-        costConfidence: ev.costConfidence,
-        nodeCount: ev.nodeCount,
-      };
-  }
-}
-
-/**
- * If `--db` points at a specific file, we still open the database via
- * `openRunDatabase(stateDir)`. Compute a stateDir = the parent dir of
- * the requested file. Callers that don't pass `--db` are handled before
- * we reach here.
+ * If `--db` points at a specific file, open via `openRunDatabase(stateDir)`
+ * where stateDir is the parent dir. Callers without `--db` never reach here.
  */
 function absoluteParent(path: string): string {
   const abs = resolvePath(path);
@@ -551,8 +251,6 @@ function absoluteParent(path: string): string {
     if (lastSlash < 0) return process.cwd();
     return abs.slice(0, lastSlash);
   }
-  // If the path exists as a dir, treat it as the stateDir; if it exists
-  // as a file, take its parent.
   const lastSlash = abs.lastIndexOf("/");
   if (lastSlash < 0) return process.cwd();
   return abs.slice(0, lastSlash);
