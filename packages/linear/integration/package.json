@@ -1,0 +1,27 @@
+{
+  "name": "@shamu/linear-integration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Linear orchestration primitives: label-state machine, rolling-comment updater, PR-attachment helper, run↔issue registry, webhook pickup driver, and escalation sink. Composes @shamu/linear-client + @shamu/linear-webhook into the building blocks Phase 6.C.3 wires into the canonical flow.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/core-supervisor": "workspace:*",
+    "@shamu/linear-client": "workspace:*",
+    "@shamu/linear-webhook": "workspace:*",
+    "@shamu/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.12",
+    "typescript": "6.0.3",
+    "vitest": "4.1.4"
+  }
+}

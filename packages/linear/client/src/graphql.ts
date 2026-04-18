@@ -132,3 +132,27 @@ export const SET_ISSUE_STATUS_MUTATION = /* GraphQL */ `
     }
   }
 `;
+
+/**
+ * `attachmentCreate` attaches an external URL (typically a PR) to a Linear
+ * issue. Linear dedupes by URL: re-submitting the same URL returns the
+ * existing attachment, so callers don't need a local dedup list.
+ */
+export const CREATE_ATTACHMENT_MUTATION = /* GraphQL */ `
+  mutation ShamuCreateAttachment(
+    $issueId: String!
+    $url: String!
+    $title: String!
+    $subtitle: String
+  ) {
+    attachmentCreate(
+      input: { issueId: $issueId, url: $url, title: $title, subtitle: $subtitle }
+    ) {
+      success
+      attachment {
+        id
+        url
+      }
+    }
+  }
+`;

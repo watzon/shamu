@@ -60,3 +60,17 @@ export interface WorkflowState {
    */
   readonly type: string;
 }
+
+// ---------------------------------------------------------------------------
+// Attachment
+// ---------------------------------------------------------------------------
+
+/**
+ * Narrowed response shape from `attachmentCreate`. We keep just `id` + `url`
+ * because Phase 6 only cares about round-tripping the PR link. Linear dedupes
+ * by URL: submitting the same URL twice returns the same attachment.
+ */
+export interface Attachment {
+  readonly id: string;
+  readonly url: string;
+}

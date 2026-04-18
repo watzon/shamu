@@ -443,6 +443,104 @@ describe("createComment / updateComment", () => {
 });
 
 // ---------------------------------------------------------------------------
+// createAttachment
+// ---------------------------------------------------------------------------
+
+describe("createAttachment", () => {
+  it("sends attachmentCreate with the expected variables and returns { id, url }", async () => {
+    const stub = stubFetch([
+      {
+        body: {
+          data: {
+            attachmentCreate: {
+              success: true,
+              attachment: {
+                id: "attachment-abc",
+                url: "https://github.com/example/repo/pull/42",
+              },
+            },
+          },
+        },
+      },
+    ]);
+    const c = new LinearClient({ apiKey: FIXTURE_KEY, fetch: stub.fn });
+    const r = await c.createAttachment({
+      issueId: ISSUE_ID,
+      url: "https://github.com/example/repo/pull/42",
+      title: "PR #42",
+      subtitle: "ready for review",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.id).toBe("attachment-abc");
+    expect(r.value.url).toBe("https://github.com/example/repo/pull/42");
+    const call = stub.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    expect(call.body).toContain("ShamuCreateAttachment");
+    const parsed = JSON.parse(call.body) as { variables: Record<string, unknown> };
+    expect(parsed.variables).toMatchObject({
+      issueId: ISSUE_ID,
+      url: "https://github.com/example/repo/pull/42",
+      title: "PR #42",
+      subtitle: "ready for review",
+    });
+  });
+
+  it("sends subtitle=null when omitted", async () => {
+    const stub = stubFetch([
+      {
+        body: {
+          data: {
+            attachmentCreate: {
+              success: true,
+              attachment: { id: "a1", url: "https://example.com/pr/1" },
+            },
+          },
+        },
+      },
+    ]);
+    const c = new LinearClient({ apiKey: FIXTURE_KEY, fetch: stub.fn });
+    const r = await c.createAttachment({
+      issueId: ISSUE_ID,
+      url: "https://example.com/pr/1",
+      title: "PR",
+    });
+    expect(r.ok).toBe(true);
+    const call = stub.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const parsed = JSON.parse(call.body) as { variables: Record<string, unknown> };
+    expect(parsed.variables.subtitle).toBeNull();
+  });
+
+  it("surfaces shape error on success=false", async () => {
+    const stub = stubFetch([
+      { body: { data: { attachmentCreate: { success: false, attachment: null } } } },
+    ]);
+    const c = new LinearClient({ apiKey: FIXTURE_KEY, fetch: stub.fn });
+    const r = await c.createAttachment({
+      issueId: ISSUE_ID,
+      url: "https://example.com/pr/1",
+      title: "PR",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe("shape");
+  });
+
+  it("rejects empty url with invalid_input without touching the wire", async () => {
+    const stub = stubFetch([]);
+    const c = new LinearClient({ apiKey: FIXTURE_KEY, fetch: stub.fn });
+    const r = await c.createAttachment({ issueId: ISSUE_ID, url: "", title: "PR" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe("invalid_input");
+    expect(stub.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error paths
 // ---------------------------------------------------------------------------
 

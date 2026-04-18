@@ -27,6 +27,7 @@ import type { Result } from "@shamu/shared/result";
 import { err, ok } from "@shamu/shared/result";
 import { isRateLimitCode, LinearError, parseResetHeader, parseRetryAfter } from "./errors.ts";
 import {
+  CREATE_ATTACHMENT_MUTATION,
   CREATE_COMMENT_MUTATION,
   GET_ISSUE_QUERY,
   ISSUE_ADD_LABEL_MUTATION,
@@ -36,7 +37,7 @@ import {
   SET_ISSUE_STATUS_MUTATION,
   UPDATE_COMMENT_MUTATION,
 } from "./graphql.ts";
-import type { CommentRef, Issue, Label, WorkflowState } from "./types.ts";
+import type { Attachment, CommentRef, Issue, Label, WorkflowState } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -130,6 +131,13 @@ interface RawIssueRemoveLabel {
 
 interface RawIssueUpdate {
   issueUpdate?: { success?: unknown; issue?: { id?: unknown } | null } | null;
+}
+
+interface RawAttachmentCreate {
+  attachmentCreate?: {
+    success?: unknown;
+    attachment?: { id?: unknown; url?: unknown } | null;
+  } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +420,47 @@ export class LinearClient {
       return err(new LinearError("shape", "issueUpdate returned success=false"));
     }
     return ok(true);
+  }
+
+  /**
+   * Attach an external URL (usually a PR) to a Linear issue. Linear dedupes
+   * by URL, so re-submitting the same URL returns the existing attachment
+   * row — callers don't need a local dedup guard.
+   */
+  public async createAttachment(input: {
+    readonly issueId: string;
+    readonly url: string;
+    readonly title: string;
+    readonly subtitle?: string;
+  }): Promise<Result<Attachment, LinearError>> {
+    const c1 = requireNonEmptyInput(input.issueId, "issueId");
+    if (c1) return err(c1);
+    const c2 = requireNonEmptyInput(input.url, "url");
+    if (c2) return err(c2);
+    const c3 = requireNonEmptyInput(input.title, "title");
+    if (c3) return err(c3);
+    // subtitle is optional; null / empty strings are sent through to Linear.
+    const variables: Record<string, unknown> = {
+      issueId: input.issueId,
+      url: input.url,
+      title: input.title,
+      subtitle: input.subtitle ?? null,
+    };
+    const res = await this.execute<RawAttachmentCreate>(
+      CREATE_ATTACHMENT_MUTATION,
+      variables,
+      "createAttachment",
+    );
+    if (!res.ok) return res;
+    const payload = res.value.attachmentCreate;
+    const id = asNonEmptyString(payload?.attachment?.id);
+    const url = asNonEmptyString(payload?.attachment?.url);
+    if (payload?.success !== true || id === null || url === null) {
+      return err(
+        new LinearError("shape", "attachmentCreate missing success=true or attachment.id/url"),
+      );
+    }
+    return ok({ id, url });
   }
 
   // -------------------------------------------------------------------------

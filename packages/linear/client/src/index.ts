@@ -30,6 +30,7 @@ export {
   parseRetryAfter,
 } from "./errors.ts";
 export {
+  CREATE_ATTACHMENT_MUTATION,
   CREATE_COMMENT_MUTATION,
   GET_ISSUE_QUERY,
   ISSUE_ADD_LABEL_MUTATION,
@@ -39,4 +40,4 @@ export {
   SET_ISSUE_STATUS_MUTATION,
   UPDATE_COMMENT_MUTATION,
 } from "./graphql.ts";
-export type { Comment, CommentRef, Issue, Label, WorkflowState } from "./types.ts";
+export type { Attachment, Comment, CommentRef, Issue, Label, WorkflowState } from "./types.ts";
