@@ -14,8 +14,8 @@ An agent-agnostic orchestrator that runs heterogeneous coding agents (Claude, Co
 ## Why these choices (from research)
 
 - OpenCode, ccswarm, Claude's own "Agent Teams," and mcp_agent_mail have all converged on **git-worktree + file-mailbox + lead/peer** as the minimal viable swarm substrate — not a coincidence worth fighting.
-- Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` v0.2.x) and Codex SDK (`@openai/codex-sdk`) are both **subprocess + JSONL event stream** under the hood. OpenCode, Pi, Amp, Gemini CLI, Aider, Q all fit the same shape. **Three adapter templates cover the entire market:** (a) subprocess + JSONL/SSE, (b) cloud REST + webhook (Cursor, Jules), (c) OpenAI-compatible chat + our own tool loop (Kimi + fallback).
-- MCP 2025-11-25 for **agent↔tool**; A2A v1.0 (Signed Agent Cards, LF-governed) for **agent↔agent** if/when we leave a single box. Not ACP (dead).
+- Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` v0.2.x) and Codex SDK (`@openai/codex-sdk`) are both **subprocess + JSONL event stream** under the hood. After the Phase 7 transport spike (2026-04-18) the adapter surface shook out as **four live classes plus one fallback:** (a) SDK-library subprocess (Claude, Codex); (b) SSE-HTTP with typed REST session API (OpenCode); (c) ACP-stdio / JSON-RPC 2.0 (Cursor as of 2026-03-04, Gemini CLI `--acp`); (d) stream-JSON / custom-JSONL shell (Amp, Pi); (e) OpenAI-compat + shamu-owned tool loop (Kimi — deferred to Phase 7.X). The "cloud REST + webhook" row originally scoped for Cursor is **obsolete** — Cursor shipped ACP in March 2026.
+- MCP 2025-11-25 for **agent↔tool**; A2A v1.0 (Signed Agent Cards, LF-governed) for **agent↔agent** if/when we leave a single box. **ACP (zed-industries Agent Client Protocol) for agent↔client** — adopted in Phase 7 as the shared transport for Cursor and Gemini. ACP is scoped to client↔agent, not agent↔agent; the two protocols coexist in the design.
 - Linear MCP server + **webhooks, not polling**, as the work-intake signal. Linear's own rate-limit docs specifically tell clients not to poll.
 - SQLite-as-queue beats Redis/NATS/Kafka for a single-box harness running 5–10 concurrent agents. Zero deps, durable, transactional with the rest of our state.
 
@@ -737,22 +737,27 @@ The live end-to-end (`SHAMU_FLOW_LIVE=1`) smoke against real Claude + Codex CLIs
 
 ### Phase 7 — Adapter fan-out + web dashboard
 
-Biggest parallel fan of any phase. Six adapter tracks plus one web-dashboard track, all independent. Each lands individually once its contract suite is green.
+Biggest parallel fan of any phase. Five adapter tracks plus one web-dashboard track plus the egress broker, all independent. Kimi moved to **Phase 7.X backlog** (post-spike, 2026-04-18) — OpenAI-compat + shamu-owned tool loop is a different shape and lower ROI than proving the five standardized transports first. Each track lands individually once its contract suite is green.
 
-**Tracks 7.A–7.F — Adapters (all Parallel)**
-- [ ] 7.A — `packages/adapters/opencode` on `@opencode-ai/sdk` (SSE event mapping; BYO provider keys via `client.auth.set`)
-- [ ] 7.B — `packages/adapters/pi` on `@mariozechner/pi-coding-agent` (`runRpcMode` + event subscribe)
-- [ ] 7.C — `packages/adapters/cursor` (REST + webhook; async job handles; no streaming; poll fallback)
-- [ ] 7.D — `packages/adapters/gemini` on `@google/gemini-cli-sdk`
-- [ ] 7.E — `packages/adapters/amp` shelling out to `amp -x --stream-json`
-- [ ] 7.F — `packages/adapters/kimi`: OpenAI-compat chat + our own tool loop (fallback template)
+Transport-spike writeup at `docs/phase-7/adapter-transports.md` classifies each adapter; the spike validated the "2 references + 3 variations" plan below.
 
-**Track 7.G — Capability matrix (Serial after 7.A–7.F)**
+**Tracks 7.A–7.E — Adapters (all Parallel)**
+
+Reference-adapter order (2 new transport classes + 3 variations):
+
+- [ ] 7.A — `packages/adapters/opencode` on `@opencode-ai/sdk@1.4.x` — **SSE-HTTP reference**. SDK spawns a local HTTP server (`createOpencode()`) or attaches to an existing one (`createOpencodeClient()`); events via `event.subscribe()` SSE stream. Sessions first-class (`session.create` / `session.get` / `session.prompt`); `sessionId` round-trips. Auth via `client.auth.set({ path: { id: "<provider>" }, body: { type: "api", key } })` — BYO-provider-keys. Adapter owns subprocess lifecycle of the OpenCode server (reap on `AgentHandle.shutdown`).
+- [ ] 7.B — `packages/adapters/cursor` — **ACP-stdio reference**. Launch `agent acp` (binary at `~/.local/bin/agent` from the Cursor desktop app; no npm distribution). Transport: JSON-RPC 2.0 newline-delimited over stdio; `session/new` + `session/load` + `session/prompt` + `session/update` notifications + `session/request_permission`. Auth via `agent login`, `--api-key` / `CURSOR_API_KEY`, or `--auth-token` / `CURSOR_AUTH_TOKEN`; ACP auth method advertised as `cursor_login`. `customTools: false` (Cursor's tools are hosted); `setModel` limited to subagent `model: "fast"`. Shared ACP projector lives at `packages/protocol/acp/` (not under `packages/adapters/base/`) so a future A2A bridge or second Zed-integrated agent can consume it directly.
+- [ ] 7.C — `packages/adapters/gemini` on `@google/gemini-cli@0.38.x` (bin: `gemini --acp`) — **ACP-stdio variation**. Reuses 7.B's ACP projector; differs in binary path, auth (`GEMINI_API_KEY` / `GOOGLE_AI_API_KEY` env or interactive `/login`), and capability flags (`unstable_setSessionModel` → declare `setModel` as `"per-session"`). No standalone SDK — the CLI is the transport. Adopt per-line validation for the stdout-corruption workaround (gemini-cli#22647); surface malformed lines as `error` events; pin a known-good `@google/gemini-cli` version in the adapter README.
+- [ ] 7.D — `packages/adapters/amp` shelling out to `@sourcegraph/amp` (bin: `amp`) with long-lived `amp -x --stream-json --stream-json-input` — **stream-JSON-shell variation** of the Claude/Codex family. Keeps stdin open to match the Claude/Codex shape and preserve the vendor's context cache; simplifies `interrupt()` semantics. `{type:"system", session_id}` → `session_start`, `{type:"assistant"}` → `assistant_message`, `{type:"result"}` → `turn_end`. Resume via `amp threads continue <id>`. Auth via `AMP_API_KEY` env (non-interactive) or `amp login` (keychain-backed, subscription). `costReporting: "subscription"`; `mcp: "none"`; `customTools: false`.
+- [ ] 7.E — `packages/adapters/pi` on `@mariozechner/pi-coding-agent@0.67.x` (bin: `pi --mode rpc`) — **JSONL-over-stdio variation** (not JSON-RPC 2.0; Pi's own command dictionary). Handshake `{type:"ready"}`; commands/responses correlated by optional `id`; async events streamed with no `id` (`tool_execution_start/update/end`, content deltas, usage). Sessions persist to disk; `--no-session` opts out. **LF-only delimiter** (strict JSONL — reject Unicode-separator-aware line readers). Tool calls surface both in `AssistantMessage.content` and via `tool_execution_*` events — project from the event stream, not the content blocks. `customTools` / `mcp` declaration resolved by a Pi-docs sub-spike during 7.E drafting.
+- [ ] 7.F — (retired; see Phase 7.X below)
+
+**Track 7.G — Capability matrix (Serial after 7.A–7.E)**
 - [ ] Generate capability matrix from each adapter's `Capabilities` declaration
-- [ ] Contract suite runs against all six on every PR (parallel matrix job in CI)
+- [ ] Contract suite runs against all five on every PR (parallel matrix job in CI)
 - [ ] Docs page: "Which adapter supports what"
 
-**Track 7.H — Web dashboard (Parallel with 7.A–7.F; see UI plan task breakdown above)**
+**Track 7.H — Web dashboard (Parallel with 7.A–7.E; see UI plan task breakdown above)**
 - [ ] All web-dashboard tasks from the UI plan land here
 
 **Track 7.I — Network egress broker (Parallel; must land by end of Phase 7)**
@@ -763,6 +768,14 @@ Biggest parallel fan of any phase. Six adapter tracks plus one web-dashboard tra
 - [ ] Policy file format shared with Phase 8's containerized enforcement
 
 **Exit:** integration test spawns one of each adapter against the same trivial task; capability matrix published; web dashboard reaches feature parity with the TUI for read-only views.
+
+---
+
+### Phase 7.X — Deferred adapters
+
+Scoped out of Phase 7 at kickoff (2026-04-18) because ROI is low until the five standardized transports are proven. Picked up post-Phase-7 exit or alongside Phase 8.
+
+- [ ] **Kimi adapter** — OpenAI-compatible chat endpoint + shamu-owned tool loop. Different shape from every other vendor: no native session, no native tool calls (shamu owns the ReAct loop), no vendor-surfaced rate-limit signal. Useful as a "fallback template" for any future OpenAI-compat-only provider (DeepSeek, Mistral Large, local llama.cpp servers, etc.) — but not load-bearing for the first Phase 7 release.
 
 ---
 
@@ -807,10 +820,10 @@ Crosses the CLI-process → long-lived-service line. **A2A is v1 scope** (confir
 | 4 | 2 | Flow engine → canonical flow |
 | 5 | 2 | CI wrapper + reviewer integration → quality bars |
 | 6 | 2 | Auth + webhooks → conventions → E2E |
-| 7 | **7** | Adapter fan-out + web dashboard → capability matrix |
+| 7 | **6** | Adapter fan-out (5 vendors) + web dashboard → capability matrix |
 | 8 | 2 | Autonomous loop → ops polish |
 
-Phases 0, 3, and 7 are the biggest parallelization wins — up to 5, 3, and 7 concurrent workstreams respectively. Once the shamu swarm is dogfooding itself (Phase 3 onward), those tracks are natural assignments for parallel agent workers: one Claude executor per track, supervised. Phase 7's seven-wide fan-out is what takes the overall calendar time from "months" to "days, if the swarm holds together."
+Phases 0, 3, and 7 are the biggest parallelization wins — up to 5, 3, and 6 concurrent workstreams respectively. Once the shamu swarm is dogfooding itself (Phase 3 onward), those tracks are natural assignments for parallel agent workers: one Claude executor per track, supervised. Phase 7's six-wide fan-out (5 adapters + web + broker, running in parallel once the two reference adapters are paved) is what takes the overall calendar time from "months" to "days, if the swarm holds together."
 
 ## Quality bars (enforced by CI, not etiquette)
 
@@ -833,10 +846,16 @@ Phases 0, 3, and 7 are the biggest parallelization wins — up to 5, 3, and 7 co
 - **Licensing:** MIT (decided during Phase 1 bootstrap; reflected in root `package.json`).
 - **Naming:** `shamu` stays (confirmed at Phase 3 kickoff, 2026-04-17).
 - **A2A in v1 (confirmed 2026-04-18):** must-ship. Phase 8 Track 8.B is no longer optional. Consequence: G11 (A2A trust roots — Signed Agent Cards, card issuer bearer-token binding, JSON-RPC + SSE transport hardening) is a concrete autonomous-daemon go-live blocker alongside G2/G3/G4/G6/G7. The attack-surface concern noted earlier is managed by the threat-model controls, not by deferring the feature.
+- **Phase 7 adapter transport decisions (confirmed 2026-04-18, post-spike `docs/phase-7/adapter-transports.md`):**
+  - **Kimi deferred** to Phase 7.X backlog. OpenAI-compat + shamu-owned tool loop is a fundamentally different shape (no vendor session, no vendor tool calls, no rate-limit signal) and the ROI is low until the other five are proven.
+  - **Cursor CLI distribution** — require Cursor Desktop installed; default `vendorCliPath` → `~/.local/bin/agent`. `shamu doctor` surfaces a clear message when missing. The Cursor binary is not on npm and ships only with the desktop app; sidecar-bootstrap (à la the Claude 200MB binary) is deferred to Phase 8's `bun build --compile` release path.
+  - **ACP projector lives at `packages/protocol/acp/`**, not under `packages/adapters/base/`. ACP is a protocol (not an adapter concern); placing it as a peer to the Phase 8 `packages/protocol/a2a/` lets a future A2A bridge or Zed-integrated agent consume it directly.
+  - **Amp subprocess shape: long-lived** `amp -x --stream-json --stream-json-input` keeps stdin open, matching the Claude/Codex shape. Preserves vendor cache and simplifies `interrupt()` semantics. Per-turn subprocess was rejected.
+  - **Gemini stdout-corruption (gemini-cli#22647):** ship with per-line validation — any line that isn't valid JSON-RPC is surfaced as an `error` event rather than crashing the adapter. Pin a known-good `@google/gemini-cli` version in the adapter README. Don't gate 7.C on an upstream fix.
 
 ## Remaining open questions
 
-None blocking. (Historical: A2A-in-v1 answered 2026-04-18; `vendorCliPath` Phase-0.B resolved earlier.)
+None blocking. (Historical: A2A-in-v1 answered 2026-04-18; `vendorCliPath` Phase-0.B resolved earlier; five Phase 7 transport decisions answered 2026-04-18.)
 
 ## Immediate next step
 
