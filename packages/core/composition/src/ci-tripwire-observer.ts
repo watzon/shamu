@@ -31,7 +31,7 @@
 
 import type { EventBus } from "@shamu/core-flow/bus";
 import type { FlowEvent, NodeCompleted } from "@shamu/core-flow/events";
-import type { RunId } from "@shamu/shared/ids";
+import { parseRunId } from "@shamu/shared/ids";
 import type { CiTripwire } from "@shamu/watchdog";
 
 /** Options for {@link createCiTripwireObserver}. */
@@ -99,10 +99,27 @@ export function createCiTripwireObserver(
       return;
     }
 
+    let observedRunId: ReturnType<typeof parseRunId>;
+    try {
+      observedRunId = parseRunId(value.runId);
+    } catch (cause) {
+      // The shape check above guarantees `runId` is a string, but the
+      // brand's `requireNonEmpty` rejects the empty string. Treat that
+      // the same way as `isCiNodeOutputShape` failure: log and skip, so
+      // one malformed publish can't break sibling subscribers.
+      console.error("[ci-tripwire-observer] invalid runId on CI node output", {
+        nodeId: completed.nodeId,
+        flowRunId: completed.flowRunId,
+        runId: value.runId,
+        cause: cause instanceof Error ? cause.message : String(cause),
+      });
+      return;
+    }
+
     tripwire.observe({
       role,
       status: value.summary.status,
-      runId: value.runId as RunId,
+      runId: observedRunId,
       at: completed.at,
       detail: { nodeId: completed.nodeId, flowRunId: completed.flowRunId },
     });

@@ -6,21 +6,23 @@
  * supervisor lands in Phase 3). Commands that need un-implemented services
  * print a friendly "not available yet" notice and exit with INTERNAL.
  *
- * TODO(1.B): once `@shamu/shared` lands, replace the inline `Logger` surface
- * below with an import from `@shamu/shared/logger` (and similarly for
- * PersistenceHandle / SupervisorHandle when those packages exist). Keeping the
- * types inline here unblocks the CLI from compiling while 1.B is in flight.
+ * Phase 6 follow-up: `Logger` now re-exports `@shamu/shared/logger.Logger`
+ * directly so the CLI's stub and the integration-layer consumers (Linear
+ * runtime, etc.) share ONE concrete type. Previously the stub was a
+ * duck-typed interface and downstream packages that wanted the real class
+ * had to construct a second `createLogger(...)` instance; now every caller
+ * gets the same object.
  */
 
+import type { Logger as SharedLogger } from "@shamu/shared/logger";
 import type { ShamuConfig } from "../config.ts";
 
-/** Minimal logger surface. Compatible shape with the forthcoming @shamu/shared logger. */
-export interface Logger {
-  debug(message: string, fields?: Record<string, unknown>): void;
-  info(message: string, fields?: Record<string, unknown>): void;
-  warn(message: string, fields?: Record<string, unknown>): void;
-  error(message: string, fields?: Record<string, unknown>): void;
-}
+/**
+ * Alias for the shared `Logger` class. Kept as a type-only re-export from
+ * this module so existing imports (`import type { Logger } from
+ * "../services/types.ts"`) continue to compile without churn.
+ */
+export type Logger = SharedLogger;
 
 /**
  * Persistence handle. In Phase 1 this is an opaque type — the shape comes from

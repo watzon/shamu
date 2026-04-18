@@ -33,7 +33,6 @@ import {
   type WebhookServerHandle,
 } from "@shamu/linear-webhook";
 import type { ShamuDatabase } from "@shamu/persistence";
-import { createLogger } from "@shamu/shared";
 import { defineCommand } from "citty";
 import { ExitCode, type ExitCodeValue } from "../../exit-codes.ts";
 import { writeDiag, writeHuman, writeJson } from "../../output.ts";
@@ -103,7 +102,8 @@ export const linearServeCommand = defineCommand({
     },
     "flow-module": {
       type: "string",
-      description: "Flow module spec (default: @shamu/flows-plan-execute-review).",
+      description:
+        "Flow module spec (default: @shamu/flows-plan-execute-review). May be a package name OR an absolute path to a .ts/.js file. NOTE: when a path is used, Bun's ESM loader resolves bare specifiers (including @shamu/*) from the module's own directory; modules that live OUTSIDE a workspace package's tree will transparently fall back to a shim in the CLI's own node_modules scope — the fallback works for flows that import only shamu packages, but we still recommend placing user-authored flows under a workspace package tree.",
     },
     cwd: {
       type: "string",
@@ -216,13 +216,11 @@ export const linearServeCommand = defineCommand({
     // Build the runtime. Boot failures (missing label, upstream error)
     // surface via `ready` rejection.
     //
-    // The integration primitives (`@shamu/linear-integration`) want a
-    // `@shamu/shared/logger.Logger` instance (class with private fields),
-    // not the CLI's structural stub. Build a fresh one that inherits
-    // the stub's log level via the standard env fallback.
-    const runtimeLogger = createLogger({
-      context: { component: "linear-runtime" },
-    });
+    // After the Phase 6 stub-logger unification (HANDOFF 6.C.3 #3), the
+    // CLI's `services.logger` IS the real `@shamu/shared/logger.Logger`,
+    // so the integration primitives can take it directly — no need for a
+    // second `createLogger` instance.
+    const runtimeLogger = svc.services.logger.child({ component: "linear-runtime" });
     let runtime: LinearRuntimeHandle;
     try {
       runtime = await createLinearRuntime({

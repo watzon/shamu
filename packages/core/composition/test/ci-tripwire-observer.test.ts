@@ -233,6 +233,22 @@ describe("createCiTripwireObserver", () => {
     expect(logged.length).toBeGreaterThan(0);
   });
 
+  it("empty-string runId is treated as malformed (parseRunId rejects, no observe call)", () => {
+    const bus = new EventBus<FlowEvent>();
+    const tripwire = makeFakeTripwire();
+    createCiTripwireObserver({ tripwire, flowBus: bus, ciNodeId: "ci" });
+
+    bus.publish(
+      makeNodeCompleted({
+        nodeId: "ci",
+        value: { kind: "CIRed", runId: "", summary: { status: "red" } },
+      }),
+    );
+
+    expect(tripwire.calls).toHaveLength(0);
+    expect(logged.length).toBeGreaterThan(0);
+  });
+
   it("stop() is idempotent", () => {
     const bus = new EventBus<FlowEvent>();
     const tripwire = makeFakeTripwire();

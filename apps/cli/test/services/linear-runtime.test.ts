@@ -442,6 +442,112 @@ describe("createLinearRuntime", () => {
     await runtime.stop();
   });
 
+  it("terminal node_completed checkpoint is serialized into the rolling body before finalize", async () => {
+    // Regression guard for Phase 6.D followup #1: the rolling-comment
+    // bridge used to fire `void appendCheckpoint(...)` for every
+    // node_completed event, which allowed the terminal node's append
+    // to race `finalize`. Both call `updateComment`; whichever wins
+    // last defines the Linear-visible body. Before the fix, the
+    // finalize's `updateComment` landed with a body snapshot that did
+    // NOT include the terminal node's section, silently dropping it.
+    //
+    // We wrap the fake client so the terminal updateComment has a
+    // non-zero delay. Under the pre-fix code the finalize's synchronous
+    // call-chain would lap the pending append and the final body would
+    // omit the terminal checkpoint; under the fix the drained tail
+    // ensures both sections are present in order.
+    const fakeClient = makeFakeClient();
+    const wh = makeFakeWebhookServer();
+    const db = createFakeFlowDb();
+
+    // Proxy the underlying client so updateComment takes a small async
+    // hop — this surfaces any ordering bug between the bridge's
+    // append and the finalize path.
+    const inner = fakeClient.client;
+    const delayedClient: LinearClient = {
+      ...inner,
+      async updateComment(id, body) {
+        await new Promise((r) => setTimeout(r, 5));
+        return inner.updateComment(id, body);
+      },
+    } as LinearClient;
+
+    const runFlow = vi.fn(async (input: RuntimeRunFlowInput): Promise<FlowRunOutcome> => {
+      input.flowBus.publish({
+        kind: "node_completed",
+        flowRunId: "FRN-RACE" as never,
+        nodeId: nodeId("plan"),
+        at: 1_000,
+        durationMs: 1,
+        cached: false,
+        output: {
+          ok: true,
+          value: null,
+          costUsd: null,
+          costConfidence: "unknown",
+          costSource: "test",
+        },
+      });
+      input.flowBus.publish({
+        kind: "node_completed",
+        flowRunId: "FRN-RACE" as never,
+        nodeId: nodeId("review"),
+        at: 2_000,
+        durationMs: 1,
+        cached: false,
+        output: {
+          ok: true,
+          value: null,
+          costUsd: null,
+          costConfidence: "unknown",
+          costSource: "test",
+        },
+      });
+      return {
+        flowRunId: "FRN-RACE" as never,
+        status: "succeeded" as const,
+        totalCostUsd: null,
+      };
+    });
+
+    const runtime = await createLinearRuntime({
+      client: delayedClient,
+      teamId: "team-1",
+      webhookServer: wh.handle,
+      db,
+      logger: silentLogger(),
+      _runFlow: runFlow,
+    });
+    await runtime.ready;
+
+    wh.push(labelAddedEvent("issue-1", "lbl-ready"));
+
+    // Wait until the flow has been invoked, every queued append has
+    // drained, and the label flip to review has landed (which is the
+    // signal that finalize completed too).
+    for (let i = 0; i < 400; i++) {
+      await flushMicrotasks();
+      await new Promise((r) => setTimeout(r, 1));
+      const labels = fakeClient.getIssueLabels();
+      if (runFlow.mock.calls.length > 0 && labels.includes("shamu:review")) break;
+    }
+
+    expect(runFlow).toHaveBeenCalledTimes(1);
+    // The final updateComment call is finalize — it sees the fully
+    // drained in-memory body, which must include BOTH the terminal
+    // node's checkpoint AND the `## Summary` footer.
+    const updates = fakeClient.calls.filter((c) => c.op === "updateComment");
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+    const lastBody = updates[updates.length - 1]?.args[1] as string | undefined;
+    expect(lastBody).toBeDefined();
+    if (!lastBody) return;
+    expect(lastBody).toContain("Node review completed");
+    expect(lastBody).toContain("## Summary");
+
+    wh.finish();
+    await runtime.stop();
+  });
+
   it("CI tripwire on flow bus → escalation sink posts incident comment + flips blocked", async () => {
     // Exercises the full escalation chain: the `_runFlow` substitute
     // publishes three consecutive red `node_completed` events on the

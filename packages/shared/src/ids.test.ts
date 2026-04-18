@@ -12,6 +12,7 @@ import {
   newToolCallId,
   newTurnId,
   newWorkflowRunId,
+  parseRunId,
   runId,
   sessionId,
   swarmId,
@@ -44,6 +45,26 @@ describe("branded IDs", () => {
       const u = newEventId();
       expect(isUlid(u)).toBe(true);
       expect(eventId(u)).toBe(u);
+    });
+  });
+
+  describe("parseRunId", () => {
+    it("accepts non-empty strings and returns them branded", () => {
+      expect(parseRunId("run-123")).toBe("run-123");
+      expect(parseRunId(newRunId())).toMatch(/.+/);
+    });
+
+    it("rejects empty strings", () => {
+      expect(() => parseRunId("")).toThrow(TypeError);
+    });
+
+    it("rejects non-string inputs with a typed error mentioning the actual type", () => {
+      expect(() => parseRunId(null)).toThrow(/RunId must be a non-empty string, got null/);
+      expect(() => parseRunId(undefined)).toThrow(
+        /RunId must be a non-empty string, got undefined/,
+      );
+      expect(() => parseRunId(42)).toThrow(/RunId must be a non-empty string, got number/);
+      expect(() => parseRunId({ id: "x" })).toThrow(/RunId must be a non-empty string, got object/);
     });
   });
 

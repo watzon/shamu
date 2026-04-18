@@ -42,3 +42,8 @@ Thumbs.db
 # Shamu runtime state (per PLAN: worktrees + mailbox exports on disk)
 .shamu/
 .gitnexus
+
+# Shamu flow-module resolver shim (Phase 6 followup): user-supplied flow
+# modules outside the workspace tree are copied here so their @shamu/*
+# bare specifiers resolve against apps/cli/node_modules. Purely runtime.
+.shamu-flow-shim/

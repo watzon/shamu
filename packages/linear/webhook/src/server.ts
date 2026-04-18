@@ -67,7 +67,23 @@ export interface WebhookServerOptions {
   readonly logger?: Logger;
   /** Override for `Date.now` in tests. */
   readonly now?: () => number;
+  /**
+   * Minimum ms between `duplicate_nonce` warn lines for the SAME webhookId.
+   * Phase 6.D observation: Linear re-delivers a webhookId aggressively after a
+   * prior 202, so the nonce-cache rejects each redelivery and — without this
+   * throttle — spams the log. Metrics (the `duplicate_nonce_total` counter
+   * exposed on the returned bundle) still tick per duplicate; only the log
+   * line is rate-limited. Default 10 000 ms (10 s). Set to 0 to disable.
+   */
+  readonly duplicateNonceLogThrottleMs?: number;
 }
+
+/**
+ * Default throttle window for `duplicate_nonce` warn logs — ten seconds per
+ * webhookId. Chosen to match Linear's typical retry cadence after a 202
+ * (several retries within a few seconds). Exposed for test parity.
+ */
+export const DEFAULT_DUPLICATE_NONCE_LOG_THROTTLE_MS = 10_000;
 
 export interface WebhookServerHandle {
   /** Actual port the server bound to (useful when port:0 was requested). */
@@ -173,6 +189,12 @@ export function buildFetchHandler(opts: WebhookServerOptions): {
   fetch: (req: Request) => Promise<Response>;
   events: AsyncIterable<LinearEvent>;
   close: () => void;
+  /**
+   * Monotonic count of duplicate-nonce rejections since handler construction.
+   * Every duplicate increments regardless of log-throttle state — callers
+   * that want a metric can read this even when the warn log is suppressed.
+   */
+  readonly duplicateNonceCount: () => number;
 } {
   if (typeof opts.secret !== "string" || opts.secret.length === 0) {
     throw new Error("WebhookServer: 'secret' is required");
@@ -180,6 +202,17 @@ export function buildFetchHandler(opts: WebhookServerOptions): {
   const logger = opts.logger ?? createLogger({ context: { component: "linear-webhook" } });
   const nonceCache = new NonceCache(opts.nonceCache ?? {});
   const sink = createEventSink();
+  const now = opts.now ?? Date.now;
+
+  // Per-webhookId last-logged-at tracker for duplicate-nonce warns. Linear
+  // re-delivers the same webhookId aggressively after a 202, and the
+  // nonce-cache's rejection is correct but the warn line swamps the log.
+  // Throttle per-ID. Entries are pruned lazily on insert so the map stays
+  // bounded (size := number of distinct recent duplicates, <= nonce-cache
+  // capacity).
+  const throttleMs = opts.duplicateNonceLogThrottleMs ?? DEFAULT_DUPLICATE_NONCE_LOG_THROTTLE_MS;
+  const lastLoggedAt = new Map<string, number>();
+  let duplicateNonceTotal = 0;
 
   const fetch = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -214,10 +247,40 @@ export function buildFetchHandler(opts: WebhookServerOptions): {
     } as const;
     const verified = verifyLinearRequest(verifyOpts);
     if (!verified.ok) {
-      logger.warn("linear webhook rejected", {
-        reason: verified.reason,
-        detail: verified.detail,
-      });
+      if (verified.reason === "duplicate_nonce") {
+        duplicateNonceTotal += 1;
+        // `detail` carries the webhookId for this rejection (see verify.ts).
+        // Throttle one warn per ID per window; still bump the counter on
+        // every redelivery so metrics remain accurate.
+        const webhookId = verified.detail;
+        const nowMs = now();
+        const previouslyLoggedAt = lastLoggedAt.get(webhookId);
+        const shouldLog =
+          throttleMs <= 0 ||
+          previouslyLoggedAt === undefined ||
+          nowMs - previouslyLoggedAt >= throttleMs;
+        if (shouldLog) {
+          logger.warn("linear webhook rejected", {
+            reason: verified.reason,
+            detail: verified.detail,
+          });
+          lastLoggedAt.set(webhookId, nowMs);
+          // Prune stale entries so the map doesn't grow unbounded over a
+          // long daemon lifetime. Any entry older than twice the window
+          // is definitely not going to suppress a future log.
+          if (lastLoggedAt.size > 1_024 && throttleMs > 0) {
+            const cutoff = nowMs - throttleMs * 2;
+            for (const [id, ts] of lastLoggedAt) {
+              if (ts < cutoff) lastLoggedAt.delete(id);
+            }
+          }
+        }
+      } else {
+        logger.warn("linear webhook rejected", {
+          reason: verified.reason,
+          detail: verified.detail,
+        });
+      }
       return new Response(verified.reason, { status: rejectStatus(verified.reason) });
     }
 
@@ -253,6 +316,7 @@ export function buildFetchHandler(opts: WebhookServerOptions): {
     fetch,
     events: sink.iterable(),
     close: () => sink.close(),
+    duplicateNonceCount: () => duplicateNonceTotal,
   };
 }
 

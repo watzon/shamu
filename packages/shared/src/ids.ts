@@ -49,6 +49,25 @@ export function runId(value: string): RunId {
   return value as RunId;
 }
 
+/**
+ * Parse an unknown string into a {@link RunId}. Throws `TypeError` when the
+ * input is not a non-empty string — matches the `runId()` factory's validation
+ * but accepts `unknown` so callers can parse arbitrary payloads (e.g. event
+ * buses, node outputs) without a prior `as string` cast.
+ *
+ * Prefer this over `as RunId` when narrowing a `string`/`unknown` value from
+ * outside the branded-type world. If the caller only has a confirmed `string`
+ * and wants a cast-free brand, use {@link runId} instead.
+ */
+export function parseRunId(input: unknown): RunId {
+  if (typeof input !== "string") {
+    throw new TypeError(
+      `RunId must be a non-empty string, got ${input === null ? "null" : typeof input}`,
+    );
+  }
+  return runId(input);
+}
+
 export function sessionId(value: string): SessionId {
   requireNonEmpty(value, "SessionId");
   return value as SessionId;

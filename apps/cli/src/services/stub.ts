@@ -1,58 +1,49 @@
 /**
  * StubServices — the only `Services` implementation that exists in Phase 1.D.
  *
- * `persistence` and `supervisor` are `null` (not yet wired). The logger writes
- * JSONL diagnostics to stderr so test runs and autonomous runs both have a
- * legible record without polluting stdout (which is the CLI's data surface).
+ * `persistence` and `supervisor` are `null` (not yet wired). The logger is a
+ * real `@shamu/shared/logger.Logger` (not a second duck-typed class) so the
+ * integration primitives (Linear runtime, etc.) that want the concrete class
+ * shape can take `services.logger` directly — see Phase 6.C.3 follow-up #3.
  */
 
+import { createLogger, type LogEntry, type LogLevel } from "@shamu/shared/logger";
 import { loadConfig } from "../config.ts";
-import type { Logger, Services } from "./types.ts";
+import type { Services } from "./types.ts";
 
-type LogLevel = "debug" | "info" | "warn" | "error";
+/**
+ * Accepted log levels at the CLI layer. The shared logger's `LogLevel`
+ * union also includes "trace", which we don't expose on the CLI `--log-level`
+ * flag; the stub only forwards values that match this narrower tuple.
+ */
+export type CliLogLevel = "debug" | "info" | "warn" | "error";
 
-class StderrLogger implements Logger {
-  constructor(private readonly minLevel: LogLevel = "info") {}
-
-  debug(message: string, fields?: Record<string, unknown>): void {
-    this.emit("debug", message, fields);
-  }
-
-  info(message: string, fields?: Record<string, unknown>): void {
-    this.emit("info", message, fields);
-  }
-
-  warn(message: string, fields?: Record<string, unknown>): void {
-    this.emit("warn", message, fields);
-  }
-
-  error(message: string, fields?: Record<string, unknown>): void {
-    this.emit("error", message, fields);
-  }
-
-  private emit(level: LogLevel, message: string, fields?: Record<string, unknown>): void {
-    if (!shouldLog(this.minLevel, level)) return;
-    const entry = { ts: new Date().toISOString(), level, message, ...(fields ?? {}) };
-    process.stderr.write(`${JSON.stringify(entry)}\n`);
-  }
+function toSharedLevel(level: CliLogLevel): LogLevel {
+  // CliLogLevel is a strict subset of the shared Logger's LogLevel.
+  return level;
 }
 
-const levelRank: Record<LogLevel, number> = {
-  debug: 10,
-  info: 20,
-  warn: 30,
-  error: 40,
-};
-
-function shouldLog(min: LogLevel, at: LogLevel): boolean {
-  return levelRank[at] >= levelRank[min];
+/**
+ * JSONL transport for the CLI. Writes one line per entry to stderr. Matches
+ * the shape the previous hand-rolled stub emitted so existing log-parsing
+ * tests continue to recognise the framing: `{ ts, level, message, ...fields }`.
+ */
+function cliStderrTransport(entry: LogEntry): void {
+  const { ts, level, msg, context } = entry;
+  const line = JSON.stringify({
+    ts: new Date(ts).toISOString(),
+    level,
+    message: msg,
+    ...context,
+  });
+  process.stderr.write(`${line}\n`);
 }
 
 export interface StubServicesOptions {
   /** Path to a config file. Defaults to auto-discovery relative to cwd. */
   readonly configPath?: string;
   readonly cwd?: string;
-  readonly logLevel?: LogLevel;
+  readonly logLevel?: CliLogLevel;
 }
 
 /**
@@ -71,9 +62,13 @@ export async function buildStubServices(
   if (options.cwd !== undefined) loadParams.cwd = options.cwd;
   const loaded = await loadConfig(loadParams);
   if (!loaded.ok) return { ok: false, error: loaded.error };
+  const logger = createLogger({
+    level: toSharedLevel(options.logLevel ?? "info"),
+    transport: cliStderrTransport,
+  });
   const services: Services = {
     config: loaded.value,
-    logger: new StderrLogger(options.logLevel ?? "info"),
+    logger,
     persistence: null,
     supervisor: null,
   };

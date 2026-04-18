@@ -41,7 +41,7 @@ export const flowRunCommand = defineCommand({
   meta: {
     name: "run",
     description:
-      "Run a flow module. <module-spec> is a package name (e.g. @shamu/flows-plan-execute-review) or a path to a .ts/.js file exporting flowDefinition + registerRunners.",
+      "Run a flow module. <module-spec> is a package name (e.g. @shamu/flows-plan-execute-review) or a path to a .ts/.js file exporting flowDefinition + registerRunners. NOTE: when a path is used, Bun's ESM loader resolves bare specifiers from the module's own directory; flow modules outside any workspace package tree will fall back to a shim in the CLI's own node_modules scope (works when the module only imports @shamu/* packages).",
   },
   args: {
     ...commonArgs,

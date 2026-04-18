@@ -52,7 +52,7 @@ import {
 } from "@shamu/linear-integration";
 import type { WebhookServerHandle } from "@shamu/linear-webhook";
 import type { ShamuDatabase } from "@shamu/persistence";
-import type { RunId } from "@shamu/shared";
+import { parseRunId } from "@shamu/shared";
 import type { Logger } from "@shamu/shared/logger";
 import { createCiTripwire } from "@shamu/watchdog";
 import { type FlowRunOutcome, runFlowInProcess } from "./flow-runner.ts";
@@ -217,15 +217,32 @@ export async function createLinearRuntime(
       // Rolling-comment bridge — one checkpoint per node_completed /
       // node_failed. We skip the CI node (its shape is typed differently
       // and it already drives the tripwire observer above).
+      //
+      // Appends are serialized via a chained promise tail so the terminal
+      // node's `updateComment` reliably lands BEFORE `finalize` runs. Per
+      // 6.D followup #1 — with fire-and-forget `void rolling.append(...)`
+      // semantics the final node's append could race `finalize`: both
+      // call `updateComment` with snapshots of the in-memory body and
+      // whichever lands last wins, silently dropping the terminal
+      // checkpoint from the Linear-visible body. Awaiting the tail before
+      // `finalize` eliminates the race without needing a mutex inside
+      // `createRollingComment` (the primitive stays simple; the bridge
+      // owns ordering because the bridge is what's firing concurrent
+      // events).
+      let appendTail: Promise<void> = Promise.resolve();
+      const enqueueAppend = (task: () => Promise<void>): void => {
+        appendTail = appendTail.then(task, task);
+      };
       const commentBridgeDispose = flowBus.subscribe((ev: FlowEvent) => {
         if (rolling === null) return;
+        const handle = rolling;
         if (ev.kind === "node_completed" && ev.nodeId !== CI_NODE_ID) {
-          void rolling
-            .appendCheckpoint({
-              at: ev.at,
-              headline: `Node ${ev.nodeId} completed (ok=${ev.output.ok}, dur=${ev.durationMs}ms)`,
-            })
-            .then((res) => {
+          enqueueAppend(async () => {
+            try {
+              const res = await handle.appendCheckpoint({
+                at: ev.at,
+                headline: `Node ${ev.nodeId} completed (ok=${ev.output.ok}, dur=${ev.durationMs}ms)`,
+              });
               if (!res.ok) {
                 opts.logger.warn("linear runtime: checkpoint append failed", {
                   issueId,
@@ -235,23 +252,23 @@ export async function createLinearRuntime(
                   message: res.error.message,
                 });
               }
-            })
-            .catch((cause) => {
+            } catch (cause) {
               opts.logger.error("linear runtime: checkpoint append threw", {
                 issueId,
                 runId,
                 nodeId: ev.nodeId,
                 cause: cause instanceof Error ? cause.message : String(cause),
               });
-            });
+            }
+          });
         } else if (ev.kind === "node_failed") {
-          void rolling
-            .appendCheckpoint({
-              at: ev.at,
-              headline: `Node ${ev.nodeId} failed: ${ev.error.message}`,
-              detail: `retriable=${ev.error.retriable} willRetry=${ev.willRetry}`,
-            })
-            .then((res) => {
+          enqueueAppend(async () => {
+            try {
+              const res = await handle.appendCheckpoint({
+                at: ev.at,
+                headline: `Node ${ev.nodeId} failed: ${ev.error.message}`,
+                detail: `retriable=${ev.error.retriable} willRetry=${ev.willRetry}`,
+              });
               if (!res.ok) {
                 opts.logger.warn("linear runtime: failure-checkpoint append failed", {
                   issueId,
@@ -261,15 +278,15 @@ export async function createLinearRuntime(
                   message: res.error.message,
                 });
               }
-            })
-            .catch((cause) => {
+            } catch (cause) {
               opts.logger.error("linear runtime: failure-checkpoint append threw", {
                 issueId,
                 runId,
                 nodeId: ev.nodeId,
                 cause: cause instanceof Error ? cause.message : String(cause),
               });
-            });
+            }
+          });
         }
       });
 
@@ -287,6 +304,17 @@ export async function createLinearRuntime(
       } finally {
         commentBridgeDispose();
         tripwireObserver.stop();
+      }
+
+      // Drain every queued append before finalizing so the terminal node's
+      // checkpoint is guaranteed to be in the in-memory body (and in
+      // Linear) when `finalize` runs. Any append that rejected its inner
+      // task already logged above; we swallow the rejection here so a
+      // transient Linear error can't short-circuit the finalize path.
+      try {
+        await appendTail;
+      } catch {
+        // best-effort drain
       }
 
       const summary = `Terminal status: ${outcome.status}, cost: ${outcome.totalCostUsd ?? "null"}`;
@@ -375,7 +403,7 @@ export async function createLinearRuntime(
         });
       }
     } finally {
-      registry.release(runId as RunId);
+      registry.release(parseRunId(runId));
     }
   }
 
