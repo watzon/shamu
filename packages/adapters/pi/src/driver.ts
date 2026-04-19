@@ -47,7 +47,10 @@
  * Idempotent — second call is a no-op.
  */
 
+import { spawn as nodeSpawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+import type { Readable as NodeReadable } from "node:stream";
 import { type PathScopeError, type ShellGateError, SpawnError } from "@shamu/adapters-base";
 import type { PiProtocolError } from "./errors.ts";
 import { bytesToStrings, decodeFrames } from "./framing.ts";
@@ -144,12 +147,12 @@ export function resolvePiBinaryPath(options: {
   readonly whichImpl?: (bin: string) => string | null;
 }): string {
   const exists = options.existsImpl ?? existsSync;
-  const which =
-    options.whichImpl ??
-    ((bin: string) => {
-      if (typeof Bun === "undefined" || typeof Bun.which !== "function") return null;
-      return Bun.which(bin);
-    });
+  // Defensive fallback — `Bun.which` is only available under Bun (it's
+  // missing under Node, which vitest uses for its worker runtime). When
+  // `Bun` is undefined we scan `$PATH` by hand so live smoke tests run by
+  // `bun x vitest` still resolve binaries installed under `/opt/homebrew`,
+  // `~/.local/bin`, etc.
+  const which = options.whichImpl ?? defaultWhichImpl;
 
   const explicit = options.vendorCliPath;
   if (explicit && explicit.length > 0) {
@@ -166,6 +169,33 @@ export function resolvePiBinaryPath(options: {
   throw new SpawnError(
     "Pi CLI not found — install with `npm install -g @mariozechner/pi-coding-agent` or set `PI_CLI_PATH` / `vendorCliPath`",
   );
+}
+
+/**
+ * Default `which` implementation. Prefers `Bun.which` (instant under the
+ * Bun runtime, which `shamu` always uses in production), falls back to a
+ * `$PATH` scan when running under Node (vitest workers). The fallback
+ * shape mirrors `@shamu/adapters-base/vendor-cli-resolver`'s `defaultWhich`
+ * so descriptors and adapter-local resolution behave identically.
+ */
+function defaultWhichImpl(bin: string): string | null {
+  const bunGlobal = (globalThis as { Bun?: { which?: (b: string) => string | null } }).Bun;
+  if (bunGlobal?.which) {
+    try {
+      const found = bunGlobal.which(bin);
+      if (typeof found === "string" && found.length > 0) return found;
+    } catch {
+      // fall through to PATH scan
+    }
+  }
+  const pathEnv = process.env.PATH;
+  if (!pathEnv) return null;
+  for (const segment of pathEnv.split(delimiter)) {
+    if (segment.length === 0) continue;
+    const candidate = join(segment, bin);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 /**
@@ -508,10 +538,12 @@ async function* readableStreamToAsyncIterable(
 }
 
 /**
- * Default production spawn: `Bun.spawn`. We don't pull in the adapters-base
- * `spawnVendorSubprocess` helper here because Pi's drain contract is
- * Node-Process-flavored and Bun.spawn + FileSink's Promise-returning write
- * already covers it. Adapters with stricter needs can inject `spawnImpl`.
+ * Default production spawn: `Bun.spawn` when running under Bun, with a
+ * `node:child_process` fallback for runtimes that lack the Bun global
+ * (Node-under-vitest when executing `bun x vitest run --config
+ * vitest.live.config.ts`). The Node path is solely a live-smoke aid —
+ * real production callers always run under Bun. Adapters with stricter
+ * needs can inject `spawnImpl`.
  */
 function defaultSpawnImpl(opts: {
   readonly binary: string;
@@ -519,31 +551,111 @@ function defaultSpawnImpl(opts: {
   readonly env: Readonly<Record<string, string>>;
   readonly cwd: string | undefined;
 }): PiSpawnLike {
-  if (typeof Bun === "undefined" || typeof Bun.spawn !== "function") {
-    throw new Error("createRealPiDriver requires Bun; tests should inject spawnImpl");
+  if (typeof Bun !== "undefined" && typeof Bun.spawn === "function") {
+    const proc = Bun.spawn({
+      cmd: [opts.binary, ...opts.args],
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      env: { ...opts.env },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    } as unknown as Parameters<typeof Bun.spawn>[0]) as unknown as {
+      stdin: PiSpawnLike["stdin"];
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      exited: Promise<number | null>;
+      pid?: number;
+      kill(signal?: number | NodeJS.Signals): void;
+    };
+    const result: PiSpawnLike = {
+      stdin: proc.stdin,
+      stdout: proc.stdout,
+      ...(proc.stderr ? { stderr: proc.stderr } : {}),
+      exited: proc.exited,
+      ...(proc.pid !== undefined ? { pid: proc.pid } : {}),
+      kill: (signal) => proc.kill(signal),
+    };
+    return result;
   }
-  const proc = Bun.spawn({
-    cmd: [opts.binary, ...opts.args],
+  return spawnViaNode(opts);
+}
+
+/**
+ * `node:child_process.spawn`-backed fallback for vitest's Node worker.
+ * Maps Node's `Readable` / `Writable` surfaces onto `PiSpawnLike`:
+ *
+ *   - `stdin` → Promise-returning `write` (honours backpressure via `drain`),
+ *     `end()`, and `flush()` no-op.
+ *   - `stdout` / `stderr` → `AsyncIterable<Uint8Array>` via
+ *     `Readable.toWeb().getReader()`.
+ *   - `exited` → Promise resolving with the exit code.
+ *   - `kill(signal)` → `proc.kill(signal)`.
+ *
+ * Kept out of the Bun branch to avoid dragging `node:child_process` onto
+ * the hot path in production.
+ */
+function spawnViaNode(opts: {
+  readonly binary: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  readonly cwd: string | undefined;
+}): PiSpawnLike {
+  const proc = nodeSpawn(opts.binary, [...opts.args], {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     env: { ...opts.env },
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  } as unknown as Parameters<typeof Bun.spawn>[0]) as unknown as {
-    stdin: PiSpawnLike["stdin"];
-    stdout: ReadableStream<Uint8Array>;
-    stderr: ReadableStream<Uint8Array>;
-    exited: Promise<number | null>;
-    pid?: number;
-    kill(signal?: number | NodeJS.Signals): void;
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  const stdinStream = proc.stdin;
+  if (!stdinStream) {
+    throw new Error("spawnViaNode: child process is missing stdin pipe");
+  }
+  const stdin: PiSpawnLike["stdin"] = {
+    write(chunk: string | Uint8Array): Promise<number> {
+      return new Promise<number>((resolve, reject) => {
+        const ok = stdinStream.write(chunk, (err) => {
+          if (err) reject(err);
+        });
+        const size = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+        if (ok) {
+          resolve(size);
+          return;
+        }
+        stdinStream.once("drain", () => resolve(size));
+      });
+    },
+    end(): Promise<void> {
+      return new Promise<void>((resolve) => {
+        stdinStream.end(() => resolve());
+      });
+    },
   };
+
+  async function* streamToAsyncIterable(
+    stream: NodeReadable,
+  ): AsyncGenerator<Uint8Array, void, unknown> {
+    for await (const chunk of stream) {
+      yield typeof chunk === "string" ? new TextEncoder().encode(chunk) : (chunk as Uint8Array);
+    }
+  }
+
+  const exited = new Promise<number | null>((resolve) => {
+    proc.once("exit", (code) => resolve(code));
+  });
+
   const result: PiSpawnLike = {
-    stdin: proc.stdin,
-    stdout: proc.stdout,
-    ...(proc.stderr ? { stderr: proc.stderr } : {}),
-    exited: proc.exited,
-    ...(proc.pid !== undefined ? { pid: proc.pid } : {}),
-    kill: (signal) => proc.kill(signal),
+    stdin,
+    stdout: streamToAsyncIterable(proc.stdout as NodeReadable),
+    ...(proc.stderr ? { stderr: streamToAsyncIterable(proc.stderr as NodeReadable) } : {}),
+    exited,
+    ...(typeof proc.pid === "number" ? { pid: proc.pid } : {}),
+    kill: (signal) => {
+      try {
+        proc.kill(signal);
+      } catch {
+        // Already dead or permission denied; reap will resolve shortly.
+      }
+    },
   };
   return result;
 }
