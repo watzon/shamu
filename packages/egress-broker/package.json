@@ -1,0 +1,24 @@
+{
+  "name": "@shamu/egress-broker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local HTTP(S) proxy broker for Shamu. Spawned per run; agent subprocesses point HTTPS_PROXY/HTTP_PROXY at it. Applies a per-run allowed_hosts policy and surfaces denied destinations as policy.egress_denied domain events (G2 hard blocker for Phase 8).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.12",
+    "@types/node": "22.13.1",
+    "vitest": "4.1.4"
+  }
+}
