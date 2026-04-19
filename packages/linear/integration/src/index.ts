@@ -36,6 +36,12 @@ export type { LabelStateMachine, LabelStateMachineOptions } from "./labels.ts";
 export { createLabelStateMachine } from "./labels.ts";
 export type { PickupDriverHandle, PickupDriverOptions } from "./pickup.ts";
 export { createPickupDriver } from "./pickup.ts";
+export type {
+  RateLimiter,
+  RateLimiterOptions,
+  TokenLease,
+} from "./rate-limiter.ts";
+export { createRateLimiter, RateLimiterOverflowError } from "./rate-limiter.ts";
 export type { RunIssueRegistry } from "./registry.ts";
 export { createRunIssueRegistry } from "./registry.ts";
 export type {

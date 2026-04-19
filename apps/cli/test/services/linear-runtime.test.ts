@@ -250,6 +250,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: async () =>
         ({
           flowRunId: "FRN" as never,
@@ -283,6 +284,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: runFlow,
     });
     await runtime.ready;
@@ -336,6 +338,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: runFlow,
     });
     await runtime.ready;
@@ -387,6 +390,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: runFlow,
     });
     await runtime.ready;
@@ -426,6 +430,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: async () =>
         ({
           flowRunId: "FRN" as never,
@@ -516,6 +521,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: runFlow,
     });
     await runtime.ready;
@@ -604,6 +610,7 @@ describe("createLinearRuntime", () => {
       webhookServer: wh.handle,
       db,
       logger: silentLogger(),
+      egressPolicy: null,
       _runFlow: runFlow,
     });
     await runtime.ready;

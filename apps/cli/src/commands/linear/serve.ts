@@ -7,19 +7,19 @@
  * resolution follows the `linear tunnel` precedent (arg → env → default,
  * missing-required fails USAGE).
  *
- * Lifecycle:
- *   - SIGINT / SIGTERM triggers `runtime.stop()` then awaits `runtime.done`.
+ * Lifecycle (Phase 8.A drain semantics):
+ *   - First SIGINT / SIGTERM triggers `runtime.drainAndStop(drainMs)`.
+ *     Pickups stop; in-flight runs continue until they finish or the
+ *     deadline trips. Rolling comments on in-flight issues get a drain
+ *     banner so operators can tell the daemon is shutting down cleanly.
+ *   - Second SIGINT / SIGTERM forces an immediate cancel
+ *     (`runtime.drainAndStop(0)`) — every in-flight AbortController
+ *     fires, issues flip to `shamu:blocked` with a drain reason, and
+ *     the daemon exits as soon as the label-flip path settles.
  *   - Clean shutdown returns `ExitCode.OK`.
- *   - Boot failures (missing creds, missing label, boot-time Linear error)
- *     return `ExitCode.USAGE` when the problem is operator-fixable and
- *     `ExitCode.INTERNAL` for everything else.
- *
- * Phase 6.C.3 scope — explicitly NOT here (deferred to Phase 8.A):
- *   - Rate-limited concurrency (today: one pickup, one run, serial).
- *   - Drain-on-shutdown for in-flight runs (today: SIGINT aborts the
- *     active flow via its AbortController; a cleaner wait-and-flush
- *     lands in 8.A).
- *   - 24-hour soak / auto-restart.
+ *   - Boot failures (missing creds, missing label, boot-time Linear
+ *     error) return `ExitCode.USAGE` when operator-fixable and
+ *     `ExitCode.INTERNAL` otherwise.
  */
 
 import { dirname } from "node:path";
@@ -43,6 +43,8 @@ import { commonArgs, done, outputMode, withServices } from "../_shared.ts";
 const ENV_TEAM_ID = "LINEAR_TEAM_ID" as const;
 const ENV_WEBHOOK_SECRET = "LINEAR_WEBHOOK_SECRET" as const;
 const ENV_FLOW_MODULE = "SHAMU_LINEAR_FLOW_MODULE" as const;
+const ENV_DRAIN_TIMEOUT = "SHAMU_DRAIN_TIMEOUT" as const;
+const DEFAULT_DRAIN_TIMEOUT_SECONDS = 600;
 
 /**
  * Resolve an arg OR env value; returns `null` when neither is present.
@@ -73,6 +75,23 @@ function resolveHost(explicit: string | undefined): string {
   const env = process.env[ENV_HOST];
   if (env && env.length > 0) return env;
   return DEFAULT_HOST;
+}
+
+/**
+ * Resolve the drain timeout in MS. Accepts decimal seconds from CLI /
+ * env; falls back to the 600s default. Non-positive values clamp to 0
+ * (forces immediate cancel on first signal).
+ */
+function resolveDrainTimeoutMs(explicit: string | undefined): number {
+  const raw =
+    explicit !== undefined && explicit.length > 0 ? explicit : process.env[ENV_DRAIN_TIMEOUT];
+  let seconds = DEFAULT_DRAIN_TIMEOUT_SECONDS;
+  if (raw !== undefined && raw.length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) seconds = parsed;
+  }
+  if (!Number.isFinite(seconds) || seconds < 0) return 0;
+  return Math.floor(seconds * 1000);
 }
 
 export const linearServeCommand = defineCommand({
@@ -118,6 +137,11 @@ export const linearServeCommand = defineCommand({
       type: "string",
       description:
         "Directory for the SQLite state file (overrides $SHAMU_STATE_DIR; default .shamu/state).",
+    },
+    "drain-timeout": {
+      type: "string",
+      description:
+        "Seconds to wait for in-flight runs to finish after the first SIGINT/SIGTERM (default 600, or $SHAMU_DRAIN_TIMEOUT). A second signal forces an immediate cancel.",
     },
   },
   async run({ args }): Promise<ExitCodeValue> {
@@ -269,21 +293,45 @@ export const linearServeCommand = defineCommand({
     svc.services.logger.info("linear serve: runtime ready", { teamId });
     writeJson(mode, { kind: "linear-serve-ready", teamId });
 
-    // Signal handlers. We allow a SECOND SIGINT to force-exit rather
-    // than hang the daemon if shutdown itself wedges.
+    const drainTimeoutMs = resolveDrainTimeoutMs(args["drain-timeout"] as string | undefined);
+
+    // Two-phase signal handling. First signal → drain (pause intake, let
+    // in-flight runs finish up to `drainTimeoutMs`). Second signal →
+    // force immediate cancel. Third signal → hard-exit, in case the
+    // drain itself wedges.
     let shutdownCount = 0;
     const onSignal = (signal: NodeJS.Signals): void => {
       shutdownCount += 1;
-      if (shutdownCount > 1) {
-        svc.services.logger.warn("linear serve: second signal; forcing exit", { signal });
-        process.exit(ExitCode.INTERRUPTED);
-      }
-      svc.services.logger.info("linear serve: shutdown signal received", { signal });
-      void runtime.stop().catch((cause) => {
-        svc.services.logger.error("linear serve: runtime.stop threw", {
-          cause: cause instanceof Error ? cause.message : String(cause),
+      if (shutdownCount === 1) {
+        svc.services.logger.info("linear serve: entering drain", {
+          signal,
+          drainTimeoutMs,
+          inFlight: runtime.inFlight,
         });
-      });
+        writeJson(mode, {
+          kind: "linear-serve-drain-started",
+          signal,
+          drainTimeoutMs,
+          inFlight: runtime.inFlight,
+        });
+        runtime.pause();
+        void runtime.drainAndStop(drainTimeoutMs).catch((cause) => {
+          svc.services.logger.error("linear serve: runtime.drainAndStop threw", {
+            cause: cause instanceof Error ? cause.message : String(cause),
+          });
+        });
+        return;
+      }
+      if (shutdownCount === 2) {
+        svc.services.logger.warn("linear serve: second signal; forcing immediate cancel", {
+          signal,
+        });
+        writeJson(mode, { kind: "linear-serve-drain-forced", signal });
+        void runtime.drainAndStop(0).catch(() => undefined);
+        return;
+      }
+      svc.services.logger.warn("linear serve: third signal; hard exit", { signal });
+      process.exit(ExitCode.INTERRUPTED);
     };
     process.on("SIGINT", () => onSignal("SIGINT"));
     process.on("SIGTERM", () => onSignal("SIGTERM"));

@@ -27,6 +27,7 @@
     "@shamu/core-composition": "workspace:*",
     "@shamu/core-flow": "workspace:*",
     "@shamu/core-supervisor": "workspace:*",
+    "@shamu/egress-broker": "workspace:*",
     "@shamu/linear-client": "workspace:*",
     "@shamu/linear-integration": "workspace:*",
     "@shamu/linear-webhook": "workspace:*",
