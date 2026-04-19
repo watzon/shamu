@@ -237,6 +237,79 @@ const FAIL_SCRIPT: Script = {
 };
 
 /**
+ * Path-scope probe script (contract `path-scope-dispatch`, G4).
+ *
+ * Echo has no real permission handler — it's a stub — but the contract
+ * suite's fail-loud mode for `scriptProbe('path-scope') === true` only
+ * asks for a visible rejection signal. We emit a synthetic
+ * `permission_request` with `decision: "deny"` paired with the offending
+ * `tool_call` / `tool_result` so the scenario's event scanner (and any
+ * reviewer eyeballing the stream) can correlate the denial to a concrete
+ * out-of-worktree write attempt. This keeps echo participating in the
+ * G4 contract row without pretending the stub enforces anything.
+ */
+const PATH_SCOPE_SCRIPT: Script = {
+  id: "path-scope-probe",
+  steps: [
+    {
+      kind: "tool_call",
+      tool: "Write",
+      args: { file_path: "/etc/shamu_contract_probe.txt", content: "probe" },
+    },
+    { kind: "permission_request", decision: "deny" },
+    {
+      kind: "tool_result",
+      ok: false,
+      summaryText: "path_scope_violation: write to /etc/shamu_contract_probe.txt rejected",
+      bytes: 0,
+    },
+    {
+      kind: "error",
+      fatal: false,
+      errorCode: "path_scope_violation",
+      message: "write target /etc/shamu_contract_probe.txt is outside the worktree",
+      retriable: false,
+    },
+    DEFAULT_USAGE,
+    DEFAULT_COST,
+    { kind: "turn_end", stopReason: "rejected_by_client", durationMs: 1 },
+  ],
+};
+
+/**
+ * Shell-gate probe script (contract `shell-ast-gate`, G5). Same shape as
+ * the path-scope script: a tool_call, a denying permission_request, and
+ * an error event whose code satisfies the scenario's scanner.
+ */
+const SHELL_GATE_SCRIPT: Script = {
+  id: "shell-gate-probe",
+  steps: [
+    {
+      kind: "tool_call",
+      tool: "Bash",
+      args: { command: "echo $(whoami)" },
+    },
+    { kind: "permission_request", decision: "deny" },
+    {
+      kind: "tool_result",
+      ok: false,
+      summaryText: "shell_gate: command-substitution rejected",
+      bytes: 0,
+    },
+    {
+      kind: "error",
+      fatal: false,
+      errorCode: "shell_gate_command_substitution",
+      message: "bash command rejected: $() command substitution is disallowed",
+      retriable: false,
+    },
+    DEFAULT_USAGE,
+    DEFAULT_COST,
+    { kind: "turn_end", stopReason: "rejected_by_client", durationMs: 1 },
+  ],
+};
+
+/**
  * Secret-echo script (contract `secret-redaction`). The user prompt embeds
  * the planted secret; we echo it back inside both a `tool_call` argument
  * and the `tool_result` summary so redaction has to scrub three sites:
@@ -308,6 +381,10 @@ export function chooseScript(prompt: string | null | undefined): Script {
 
   // `FAIL_TURN`
   if (lower.includes("definitely-does-not-exist")) return FAIL_SCRIPT;
+  // G4 probe — `PATH_SCOPE_ESCAPE_TURN`.
+  if (text.includes("CONTRACT_PROBE_PATH_SCOPE_ESCAPE")) return PATH_SCOPE_SCRIPT;
+  // G5 probe — `SHELL_SUBSTITUTION_TURN`.
+  if (text.includes("CONTRACT_PROBE_SHELL_SUBSTITUTION")) return SHELL_GATE_SCRIPT;
   // `SECRET_TURN` — carries the planted secret substring.
   if (text.includes(PLANTED_SECRET_TOKEN)) return SECRET_SCRIPT;
   // `LONG_TURN` — "Count slowly from 1 to 100".
@@ -335,4 +412,6 @@ export const SCRIPTS = Object.freeze({
   long: LONG_SCRIPT,
   fail: FAIL_SCRIPT,
   secret: SECRET_SCRIPT,
+  pathScope: PATH_SCOPE_SCRIPT,
+  shellGate: SHELL_GATE_SCRIPT,
 });

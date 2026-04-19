@@ -43,6 +43,63 @@ const PLANTED_SECRET = "sk-ant-FAKE-FIXTURE-aAbBcCdDeEfFgGhHiI123456";
 function scriptForPrompt(prompt: string): ClaudeRaw[] {
   const base: ClaudeRaw[] = [{ type: "system", subtype: "init", session_id: "sess-ctr" }];
 
+  // G4 / G5 probes (Phase 7.G fail-loud migration). Claude's real gate
+  // lives in `canUseTool` inside the SDK; the scripted driver has no
+  // canUseTool callback to trigger. Instead we emit the tool_use the
+  // adapter WOULD have rejected, then synthesize a non-success `result`
+  // whose `subtype` the projector turns into an `error` event — same
+  // effective shape the real canUseTool path produces after a deny.
+  if (/CONTRACT_PROBE_PATH_SCOPE_ESCAPE/.test(prompt)) {
+    base.push({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolcall_probe_path",
+            name: "Write",
+            input: {
+              file_path: "/etc/shamu_contract_probe.txt",
+              content: "probe",
+            },
+          },
+        ],
+      },
+    } as ClaudeRaw);
+    base.push({
+      type: "result",
+      subtype: "path_scope_violation",
+      duration_ms: 1,
+      total_cost_usd: 0.0001,
+      usage: { input_tokens: 1, output_tokens: 0 },
+    } as ClaudeRaw);
+    return base;
+  }
+
+  if (/CONTRACT_PROBE_SHELL_SUBSTITUTION/.test(prompt)) {
+    base.push({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolcall_probe_shell",
+            name: "Bash",
+            input: { command: "echo $(whoami)" },
+          },
+        ],
+      },
+    } as ClaudeRaw);
+    base.push({
+      type: "result",
+      subtype: "shell_gate_command_substitution",
+      duration_ms: 1,
+      total_cost_usd: 0.0001,
+      usage: { input_tokens: 1, output_tokens: 0 },
+    } as ClaudeRaw);
+    return base;
+  }
+
   // Long-running "Count slowly" turn: emit an assistant_delta, then park so
   // the interrupt scenario can fire. The driver's `nextStep` waits for
   // interrupt before emitting a terminal result.
@@ -270,6 +327,12 @@ const aut: AdapterUnderTest = {
     mkdirSync(dir, { recursive: true });
     return dir;
   },
+  // Phase 7.G migration (2026-04-19): claude's fake driver scripts both
+  // G4 and G5 probes by emitting the tool_use + a non-success `result`
+  // whose subtype the projector turns into an `error` event. The real
+  // canUseTool gate is unit-tested in `test/unit/permission-handler.test.ts`;
+  // the contract-suite's fail-loud assertion here is driver-side visibility.
+  scriptProbe: (probe) => probe === "path-scope" || probe === "shell-gate",
 };
 
 runAdapterContractSuite(aut, { timeoutMs: 5_000 });

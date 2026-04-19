@@ -31,7 +31,9 @@ import {
   failScript,
   longScript,
   patchScript,
+  pathScopeProbeScript,
   readmeToolScript,
+  shellGateProbeScript,
   type TurnStep,
 } from "./fake-thread.ts";
 
@@ -69,6 +71,12 @@ function chooseScript(input: string): StepScript {
   if (lower.includes("count slowly")) return longScript;
   if (lower.includes("create a file")) return patchScript as StepScript;
   if (/read\s+.+readme\.md/i.test(input)) return readmeToolScript as StepScript;
+  // G4 / G5 probes — fail-loud for codex (`scriptProbe: true`). The fake
+  // driver emits a rule-breaking `item.started`; the real CodexHandle's
+  // `decidePermission` pre-dispatch gate fires the rejection.
+  if (input.includes("CONTRACT_PROBE_PATH_SCOPE_ESCAPE")) return pathScopeProbeScript as StepScript;
+  if (input.includes("CONTRACT_PROBE_SHELL_SUBSTITUTION"))
+    return shellGateProbeScript as StepScript;
   return echoScript as StepScript;
 }
 
@@ -128,6 +136,12 @@ const aut: AdapterUnderTest = {
     mkdirSync(dir, { recursive: true });
     return dir;
   },
+  // Phase 7.G migration (2026-04-19): codex's CodexHandle runs
+  // `decidePermission` on every `item.started` (file_change + command_execution)
+  // before projecting the event, so both G4 and G5 gates are enforceable
+  // at adapter level. Opt in to fail-loud mode — the fake thread emits
+  // rule-breaking items; the handle's own gate fires the rejection.
+  scriptProbe: (probe) => probe === "path-scope" || probe === "shell-gate",
 };
 
 // HANDOFF followup #5 — STRESS_ITERATIONS lives on the scenario itself but
