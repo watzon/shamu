@@ -1,157 +1,145 @@
 # Shamu — Session Handoff
 
-**Last updated:** 2026-04-18 (Phase 7 kickoff: cleanup PR #11 landed; adapter-transport spike + PLAN.md rewrite in this PR. Next: spawn 7.A OpenCode + 7.B Cursor-ACP reference adapters.)
+**Last updated:** 2026-04-19 (Phase 7 major tracks complete: 5 adapters + `@shamu/protocol-acp` + `@shamu/egress-broker` + shared harness refactor. Remaining: 7.G capability matrix, 7.H web dashboard.)
 
-Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) to get the full pipeline; this file is the snapshot of *where we are right now*.
+Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) for the full pipeline; this file is the snapshot of where we are right now.
 
 ## TL;DR
 
-Phase 6 is fully closed. Phase 7 kickoff is in flight. A Phase 6 cleanup pass (PR #11) absorbed five non-blocking carry-over followups (rolling-comment race, duplicate-nonce log spam, flow-module resolution shim, CLI logger unification, `parseRunId` helper). A Phase 7 transport spike classified the five remaining adapters (OpenCode / Cursor / Gemini / Amp / Pi) into four transport classes + one deferred fallback — writeup at `docs/phase-7/adapter-transports.md`. Key findings: Cursor and Gemini both speak ACP-stdio (JSON-RPC 2.0) — one ACP projector covers both; PLAN.md referenced a nonexistent `@google/gemini-cli-sdk` package (fixed); the obsolete "cloud REST + webhook" transport row for Cursor is retired. Kimi moved to Phase 7.X backlog.
+All five Phase 7 adapters landed (OpenCode, Cursor, Gemini, Amp, Pi). `@shamu/protocol-acp` covers Cursor + Gemini; `@shamu/egress-broker` closes the G2 threat-model gap that blocks the Phase 8 autonomous daemon. A post-E refactor consolidated ~90% duplication across Cursor/Gemini/Amp/Pi into `packages/adapters/base/src/harness.ts` (AdapterHandleBase + composable helpers) — 1086 lines removed across the four adapters, 702 added in shared harness, net −384. OpenCode is deliberately excluded from the harness (two-stage SSE drain + per-turn cancel hook). Three live smokes runnable locally (Cursor, OpenCode, Pi); Amp blocked by vendor paid-credits wall; Gemini blocked by user's Google account ToS. 26 workspace packages; contract suite runs 17 × 5 = 85 scenarios with fail-loud G4/G5 probes on four of five adapters (OpenCode stays warn-only as 7.G prep).
 
-- **Phase 6 cleanup** — PR **#11 → `dc9bcb4`**. Five followups. 68 CLI tests (+3 new files), 19 webhook server tests (+5), 8 ids tests (+3), ci-tripwire observer +1. `parseRunId` in `@shamu/shared/ids`; `Logger` is now a type alias for the shared class.
-- **Phase 7 spike** — lives in this PR (`shamu/phase/7-kickoff`). Doc: `docs/phase-7/adapter-transports.md`. Four ratified decisions (Kimi deferral / Cursor distribution / ACP projector location / Amp long-lived / Gemini stdout-corruption) now in PLAN.md "Decisions captured from user".
+## Key commits
 
-18 workspace packages. 1101+ tests (exact count on next full run). Four gates green on cleanup PR.
+- #13 7.A OpenCode (SSE-HTTP ref + shared contract-test harness)
+- #14 7.B Cursor ACP ref + `@shamu/protocol-acp`
+- #15 7.C Gemini ACP variation
+- #16 7.D Amp stream-JSON-shell
+- #17 7.E Pi custom-JSONL
+- #18 fix: default `mcpServers: []` on ACP `session/new`+`session/load`
+- #19 chore: OpenCode + Pi provider/model vendorOpts + OpenCode shutdown-timeout guard
+- #20 7.I `@shamu/egress-broker`
+- #21 chore: shared ACP/stream adapter harness
 
-## Read-first order for a fresh session
-
-1. This file.
-2. `git log --oneline | head -25` — shape of what's landed.
-3. `PLAN.md` §§ "Core architecture", "Phased delivery → Phase 7" (rewritten 2026-04-18), "Decisions captured from user".
-4. `docs/phase-7/adapter-transports.md` — per-adapter transport classification + evidence log.
-5. Load `shamu-dev` skill for the pipeline mechanics.
-
-## Where we are
+## Status
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| 0 | De-risking spikes | ✅ all 5, writeups in `docs/phase-0/` |
-| 1 | Foundations | ✅ all 5 tracks |
-| 2 | Claude + Codex adapters | ✅ all 3 tracks |
-| 3 | Supervisor, worktrees, mailbox, watchdog | ✅ 4/4 tracks |
-| 4 | Plan → Execute → Review flow + composition | ✅ 4/4 tracks |
-| 5 | agent-ci gate | ✅ 3/3 tracks; branch protection applied |
-| 6 | Linear integration | ✅ 6.A (#3) / 6.B (#4) / 6.C (#6 + #7 + #8) / 6.D (#10) / cleanup (#11) |
-| 7 | Adapter fan-out + web dashboard + egress broker | 🟡 kickoff in flight; reference-adapter order paved |
-| 8 | Autonomous mode + A2A + ops polish | ⬜ |
+| 0–6 | (prior) | ✅ |
+| 7.A | OpenCode | ✅ (#13) |
+| 7.B | Cursor + protocol-acp | ✅ (#14) |
+| 7.C | Gemini | ✅ (#15) |
+| 7.D | Amp | ✅ (#16) |
+| 7.E | Pi | ✅ (#17) |
+| 7.F | Kimi | deferred to Phase 7.X |
+| 7.G | Capability matrix | ⬜ (unblocked) |
+| 7.H | Web dashboard | ⬜ |
+| 7.I | Egress broker | ✅ (#20) |
+| Shared harness refactor | Cursor/Gemini/Amp/Pi → `@shamu/adapters-base` | ✅ (#21) |
+| Post-7.A-E fix PRs | #18 #19 | ✅ |
 
 ## What's in flight
 
-- **This PR (Phase 7 kickoff)** — PLAN.md rewrite + `docs/phase-7/adapter-transports.md`. Once merged, the reference adapters spawn next.
+Nothing.
 
 ## Owed manual steps
 
-None.
+- **Rotate OpenCode auth tokens** — during 2026-04-18 live-smoke debugging, `cat ~/.local/share/opencode/auth.json` was executed and the file contents (OpenAI OAuth refresh token, Fireworks key, Zai key, opencode API key) appeared in the conversation. Conversation logs may persist. Rotate at your convenience.
 
-## Phase 7 next steps (after kickoff PR merges)
+## Phase 7 next steps
 
-1. **Spawn 7.A (OpenCode — SSE-HTTP reference)** as the first reference adapter. Contract-test harness extraction happens here and becomes the template for 7.G capability matrix.
-2. **Spawn 7.B (Cursor — ACP-stdio reference)** in parallel or immediately after 7.A lands. Includes the shared ACP projector at `packages/protocol/acp/`.
-3. **Once 7.B is green**, fan out 7.C (Gemini — reuses ACP projector), 7.D (Amp — stream-JSON-shell variation), 7.E (Pi — custom-JSONL variation) in parallel with 7.H (web dashboard) and 7.I (egress broker).
-4. **7.G (capability matrix, docs)** serializes after 7.A–7.E.
+1. **7.G — Capability matrix + docs** (serial after A–E; now unblocked). Generate matrix from each adapter's `capabilities.json`; run contract suite as a parallel CI matrix job against all five adapters; write "Which adapter supports what" docs page. Doc-heavy, low-risk.
+2. **7.H — Web dashboard** (parallel; big scope). Per the earlier decision, scope to **MVP only**: swarm overview + run detail + SSE subscription + stable `/run/<id>` URLs. DAG viz + diff viewer + cost charts deferred to follow-on PRs. Hono (Bun-native HTTP) + SolidJS; 127.0.0.1-bound.
+3. **Egress-broker adapter wiring (follow-on)** — plumb `createEgressBroker` into `@shamu/core-composition` for per-spawn broker lifecycle + `HTTPS_PROXY`/`HTTP_PROXY` env injection in `SpawnOpts.env`.
 
-Phase 7.I (egress broker) is a G2 hard blocker for the Phase 8 autonomous daemon — it **must** land by end of Phase 7.
+## Followups
 
-## Followups to absorb in Phase 7 / Phase 8 / later
+### From PR #20 (egress broker)
 
-### From Phase 6 cleanup PR #11 (new — 2026-04-18)
+1. Adapter wiring follow-on (per-spawn broker + proxy env injection).
+2. Escalation-bus integration for `PolicyEgressDeniedEvent` (route into supervisor's escalation channel).
+3. TLS interception for payload inspection (Phase 8; per-run CA + subprocess trust-store + MITM rotation).
+4. Multi-run single-broker (per-connection policy tag via `Proxy-Authorization`).
+5. Shared host-matcher factoring — move `policy.ts`'s decision function into `@shamu/policy` so Phase 8's container enforcer imports the same code.
+6. Upstream-proxy chaining for corporate `HTTPS_PROXY`.
 
-1. **`.shamu-flow-shim/` dir accumulation** — the CLI shim fallback (flow-contract.ts) copies one entry per distinct absolute path. A long-lived daemon fed many ephemeral paths would accumulate entries. Add prune or TTL (or switch to `os.tmpdir()` with time-based cleanup) as part of Phase 8.A daemon hardening.
-2. **`escalation-sink.ts` still has an `as RunId` cast** on `EscalationRaised.childId` — candidate for a future sweep once the event's runtime shape is tightened to `RunId`.
-3. **`duplicateNonceCount()` metric wiring** — read-only accessor on the webhook handler bundle; natural wire-up point for the Phase 8 metrics surface alongside `nonceCache.size()`.
-4. **Infrequent agent-ci flake** — 1 of 3 runs during cleanup verification failed without surfacing a visible error. Probably a Docker container reap race; add a retry or investigate if it recurs.
+### From PR #21 (shared harness)
 
-### From Phase 6.D live E2E
+1. Tighten `SessionId | null` handling — prompt/cancelSession call sites still cast `as SessionId`.
+2. Migrate OpenCode onto the harness once its SSE cancel hook fits `runShutdownSequence.drainStream`.
+3. Simplify `AdapterEventQueue<E>` → `AgentEvent` only (generic currently unused).
+4. Drop `PromptWatchdog.isArmed()` if no caller materializes by Phase 8.
+5. `AgentEventKind` exhaustiveness test for `redactAgentEvent` (compile-time only today).
 
-Items 1–3 (rolling-comment race, duplicate-nonce spam, flow-module footgun) shipped in cleanup PR #11. No remaining 6.D followups.
+### From 7.A (still open)
 
-### From Phase 6.C.3 (still open)
+- **Migrate echo/claude/codex/opencode fake drivers to `scriptProbe: true`** for fail-loud G4/G5 probes. 7.G prep — ~20 lines per adapter.
 
-1. **Auto-attach PR URL from flow output** — the canonical flow doesn't surface a PR URL in its node outputs today. Hook: execute step pushes + runs `gh pr create` and includes the URL in `NodeOutput.value`; the runtime subscribes to `node_completed` and calls `attachPrToIssue`. Ship as part of Phase 8.A or as a separate "flow emits PR URL" followup. Today's `shamu linear attach-pr` is manual.
-2. **CI-tripwire runId ↔ pickup runId mismatch** — the tripwire's `childId` is the newest runId in the streak, which may not match the current pickup's runId. The runtime's own failure-flip-to-blocked is a backstop, so user-visible behavior is correct, but the escalation sink's comment may not fire for tripwire events unless the registry has the tripwire's last runId. Revisit in Phase 8.A with a richer "supervisor bus event references a runId not directly bound to the pickup" lookup.
-3. **Persistent registry + rolling-comment state** (Phase 8 daemon): add `run_issue_bindings` + `run_rolling_comments` tables to `@shamu/persistence` so daemon restarts don't orphan in-flight runs.
-4. **Rate-limited concurrent pickups** (Phase 8.A): today's `onPickup` awaits serialize runs; Phase 8.A adds per-role + global concurrency caps.
-5. **Graceful drain-on-shutdown** (Phase 8.A): today's SIGINT aborts the active flow via its AbortController; Phase 8.A drains running runs into a resumable state before exit.
-6. **24-hour soak test** against a staging Linear project (Phase 8.A exit criterion).
-7. **Retry loop in the escalation sink** honoring `LinearError.detail.retryAfterSeconds`.
-8. **Bounded-queue back-pressure for the pickup driver** — today's sequential-await is correct but not a hard cap. If real-world slow consumers emerge, add drop-oldest via a bounded queue.
+### From 7.C (still open)
 
-### From Phase 6.C.2 (still open)
+- **`Capabilities.setModel` proper field** (`"per-session" | "subagent" | "none"`) once Gemini's `unstable_setSessionModel` graduates upstream.
 
-9. **`AgentSessionEvent` subscription** — not in the current typed webhook union. Phase 7 may want agent-session routing once adapter fan-out lands.
-10. **Live cloudflared smoke** — `tunnel.test.ts` mocks `spawnImpl`. A `SHAMU_LINEAR_LIVE=1` gate that spawns real cloudflared would exercise the full path.
-11. **WebCrypto swap** in the webhook verifier — we use `node:crypto.timingSafeEqual`; not a concern while we're Bun-only.
+### From 7.D (still open)
 
-### From Phase 6.A (still open)
+- Verify `formatUserTurn()` stdin shape once a dev machine can run live Amp.
+- In-stream cancel message for Amp when upstream adds one.
+- Stderr routing via `vendorOpts.verbose: true` → `stderr` AgentEvents.
 
-12. **OAuth 2.1 DCR against `mcp.linear.app/mcp`** — revisit when shamu is hosted multi-tenant. Credential-store coordinates already exported so a future OAuth adapter can sibling the same account row.
-13. **Rate-limit shape monitoring** — Linear's current shape is HTTP 400 with `extensions.code: RATELIMITED`. Callers that inspect `LinearError.detail.status` must not assume 429.
+### From 7.E (still open)
 
-### Carried from Phase 5.A (still open)
+- `@shamu/shared/credentials` integration for Pi auth (`resolvePiAuth`).
+- Real usage + cost via `get_session_stats` on Pi `turn_end` (today: zeroed).
+- `tool_execution_update` progress → `stdout` events if useful.
 
-14. **Artifact capture to SQLite** — `GateResult.runDir` exists; needs a `run_artifacts` table.
-15. **Redactor pass on CI excerpts** — `@shamu/shared/redactor` not wired into `buildReviewerExcerpt`.
-16. **Agent-ci programmatic abort** — swap SIGTERM for official `abort()` when `@redwoodjs/agent-ci` exposes one.
-17. **Richer live gate smoke** — `gate.test.ts`'s `SHAMU_CI_LIVE=1` block is exit-code only.
+### From Phase 6.C.3 (still open — Phase 8.A targets)
 
-### Carried from Phase 5.B (still open)
+- Auto-attach PR URL from flow output.
+- CI-tripwire runId ↔ pickup runId mismatch.
+- Persistent registry + rolling-comment state.
+- Rate-limited concurrent pickups.
+- Graceful drain-on-shutdown.
+- 24-hour soak test.
+- Retry loop in escalation sink (honor `retryAfterSeconds`).
+- Bounded-queue back-pressure for pickup driver.
 
-18. **`CINodeOutput` cast safety on rehydration** — revisit when flow-run resumability tests exercise CI output.
-19. **Engine-side Loop body re-execution** (inherited from 4.A).
-20. **Persistence `flow_run_id` ↔ CI run linkage** — observability correlation is a separate migration job.
-21. **RFC upstream filing** — `docs/phase-5/rfc-report-json.md` draft. User owns whether to file on `@redwoodjs/agent-ci`.
+### From Phase 6.C.2 / 6.A / Phase 5 (still open — carried)
 
-### Carried from Phase 5.C (still open)
+- `AgentSessionEvent` subscription in typed webhook union.
+- Live cloudflared smoke (`SHAMU_LINEAR_LIVE=1`).
+- OAuth 2.1 DCR against `mcp.linear.app/mcp` (multi-tenant story).
+- Rate-limit shape monitoring.
+- Artifact capture to SQLite.
+- Redactor pass on CI excerpts.
+- Agent-ci programmatic abort.
+- Richer live gate smoke.
 
-22. **`shellcheck` gate in CI** — not installed locally during 5.C; if `scripts/setup-branch-protection.sh` grows, add shellcheck on ubuntu-latest.
-23. **Branch-protection script idempotency proof** — dry-run only verifies payload shapes.
+### Vendor / environment
 
-### Carried from earlier phases (non-blocking)
+- **Amp** — vendor requires paid credits for non-interactive `amp -x`; our wire projection is correct but live-smoke can't validate end-to-end until paid.
+- **Gemini** — user's Google account flagged ToS-disabled; appeal needed before live-smoke can complete.
+- **`apps/cli/.shamu-flow-shim/` accumulation** — long-lived daemon needs a prune or TTL (Phase 8.A).
+- **Infrequent `agent-ci` flake** — ~1-in-3 failures observed during cleanup PR #11; probably Docker reap race. Add retry if recurring.
 
-24. **ParallelFanOut + Join node kinds** (4.A).
-25. **Skipped-branch status propagation** (4.A).
-26. **Richer `flow status` output** (4.C).
-27. **Flow discovery** (4.C) — `shamu flow run <name>` without explicit module-spec.
-28. **Progress streaming** (4.C).
-29. **Paused exit code** (4.C) — taxonomy lacks `NEEDS_HUMAN`.
-30. **TTL-refresh API on leases** (3.C).
-31. **Recipient-list expansion in `mailbox.broadcast`** (3.C).
-32. **Non-`main` base-branch discovery** (3.B).
-33. **Subprocess auto-restart for the watchdog** (3.D).
-34. **Phase 0 fixture regeneration** (2.x).
-35. **Resume-through-expired-session E2E coverage** (2.x).
-36. **`shamu cost <run-id>` subcommand** (2.x).
-37. **Live subprocess real-spawn coverage in `adapters-base`** (2.x).
-
-## Open questions for the user
+## Open questions
 
 None blocking.
 
-## Already-answered decisions (don't re-litigate)
+## Already-answered decisions
 
-See PLAN.md "Decisions captured from user" for the canonical list. New in this phase:
-
-- **Phase 7 adapter transport decisions (2026-04-18):** Kimi deferred to 7.X; Cursor default `vendorCliPath` = `~/.local/bin/agent` (require Cursor Desktop); ACP projector at `packages/protocol/acp/`; Amp long-lived subprocess; Gemini per-line validation for gemini-cli#22647. All five fully captured in PLAN.md.
-
-Phase 6.C additions (still hold): composition root for the daemon in `apps/cli/src/services/linear-runtime.ts`; serialized pickups as the 6.C MVP; `runFlowInProcess` in `apps/cli/src/services/flow-runner.ts`; `EscalationCause` expansion; belt-and-suspenders failure flip; manual PR attachment for 6.D; daemon env contract; rolling-comment failure semantics; pickup driver cancellation cooperative; no bounded queue for pickups (sequential await = natural back-pressure).
-
-Phase 6.A/6.B decisions (still hold): personal API key instead of OAuth DCR; `@shamu/shared/credentials` persist-back; async iterator on `handle.events`; 404 on non-`/webhooks/linear` paths; ±5-min timestamp tolerance; 10k-entry in-memory nonce cache.
-
-Historical Phase 5 decisions still hold (DAG shape, verdict enum, FLOW_VERSION=2, CI node maxRetries=0, env allowlist, `GITHUB_REPO` resolution, CI tripwire parallel channel, branch-protection ruleset).
+- **Phase 7 adapter transport decisions** (2026-04-18) — full list in PLAN.md "Decisions captured from user".
+- **Shared harness approach** — B+A hybrid at `packages/adapters/base/src/harness.ts`. OpenCode excluded (two-stage SSE drain + per-turn cancel hook don't match).
+- **Egress-broker policy format** — JSON; `defaultPolicy`/`allowedHosts`/`allowedHostSuffixes`/`egressLogPath`. Shared with Phase 8 containerized enforcement (same `loadEgressPolicy` + pure `matchHost`).
 
 ## Pointers
 
-- `PLAN.md` — architecture + phased delivery + decisions + open questions (Phase 7 section rewritten 2026-04-18; transport decisions added)
-- `docs/phase-7/adapter-transports.md` — per-adapter transport classification + evidence log (from kickoff spike)
-- `.env` at repo root (gitignored) — holds `LINEAR_API_KEY`, `LINEAR_TEAM_ID`, `LINEAR_WEBHOOK_SECRET` for local dev
-- `packages/linear/*` — 6.A + 6.B + 6.C.2 packages
-- `apps/cli/src/services/linear-runtime.ts` + `apps/cli/src/commands/linear/serve.ts` — 6.C.3 composition (with cleanup #11 race-fix)
-- `.claude/skills/shamu-dev/SKILL.md` — the pipeline (load at session start)
-- `AGENTS.md` / `CLAUDE.md` — GitNexus-generated code context
-- `git log` — every phase has a detailed body
+- `PLAN.md` — architecture + phased delivery + decisions.
+- `docs/phase-7/adapter-transports.md` — per-adapter transport classification.
+- `packages/adapters/base/src/harness.ts` — shared ACP/stream handle machinery.
+- `packages/adapters/{cursor,gemini,amp,pi}/src/handle.ts` — thin vendor-specific deltas.
+- `packages/adapters/opencode/` — outlier; NOT on the shared harness.
+- `packages/egress-broker/` — network policy proxy.
+- `.claude/skills/shamu-dev/SKILL.md` — pipeline.
+- `AGENTS.md` / `CLAUDE.md` — GitNexus-generated code context.
 
 ## HANDOFF maintenance
 
-- Update at every phase boundary (end of Phase N → flip status, refresh "next" section, rotate followups).
-- Update at any session end where work is mid-flight (note what agents are running, what files are half-done).
-- Keep it short. If it grows past ~200 lines, something that should be in PLAN.md is leaking in.
+Update at phase boundaries (end of Phase N → flip status, refresh "next" section, rotate followups) and at mid-flight session ends (note in-flight agents + half-done files). Keep under ~200 lines. If it grows past that, leak content into PLAN.md.
