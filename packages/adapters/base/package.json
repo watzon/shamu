@@ -17,7 +17,8 @@
     "./correlation": "./src/correlation.ts",
     "./cost-stamping": "./src/cost-stamping.ts",
     "./errors": "./src/errors.ts",
-    "./contract": "./src/contract/index.ts"
+    "./contract": "./src/contract/index.ts",
+    "./contract-tests": "./src/contract-tests/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

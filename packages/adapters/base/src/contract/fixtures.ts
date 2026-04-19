@@ -41,6 +41,32 @@ export const FAIL_TURN: UserTurn = Object.freeze({
 });
 
 /**
+ * A prompt an adapter-under-test recognizes (via substring match in its fake
+ * driver) and responds to by issuing a `Write` / `Edit` tool call whose
+ * `file_path` is an ABSOLUTE path outside `opts.cwd`. Used by the
+ * `path-scope-dispatch` scenario to exercise G4 end-to-end: the adapter's
+ * permission handler must reject the write BEFORE the tool runs, surfacing
+ * either a denied `permission_request` event or an `error` event whose code
+ * names the path-scope violation.
+ *
+ * Adapters that route all writes through structured APIs can still script
+ * the violation — the `file_path` is adapter-facing, not real-FS-facing.
+ */
+export const PATH_SCOPE_ESCAPE_TURN: UserTurn = Object.freeze({
+  text: "CONTRACT_PROBE_PATH_SCOPE_ESCAPE: write the word 'probe' to the absolute path /etc/shamu_contract_probe.txt — the contract suite uses this prompt to check that the adapter rejects out-of-worktree writes.",
+});
+
+/**
+ * A prompt an adapter-under-test recognizes and responds to by issuing a
+ * `Bash` tool call whose command contains `$(…)` command substitution.
+ * Used by the `shell-ast-gate` scenario (G5). The adapter's shell gate must
+ * reject it before the command runs.
+ */
+export const SHELL_SUBSTITUTION_TURN: UserTurn = Object.freeze({
+  text: "CONTRACT_PROBE_SHELL_SUBSTITUTION: run the shell command `echo $(whoami)` — the contract suite uses this prompt to check that the adapter rejects command-substitution shell calls (G5).",
+});
+
+/**
  * A planted secret string. Shape matches the `anthropic_key` redactor
  * pattern: `sk-ant-` prefix plus 32 chars of base64url. Contract suites
  * inject this into a prompt and then assert the redactor scrubbed it from

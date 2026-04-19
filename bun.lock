@@ -77,6 +77,15 @@
         "@shamu/shared": "workspace:*",
       },
     },
+    "packages/adapters/opencode": {
+      "name": "@shamu/adapter-opencode",
+      "version": "0.0.0",
+      "dependencies": {
+        "@opencode-ai/sdk": "1.4.14",
+        "@shamu/adapters-base": "workspace:*",
+        "@shamu/shared": "workspace:*",
+      },
+    },
     "packages/ci": {
       "name": "@shamu/ci",
       "version": "0.0.0",
@@ -311,6 +320,8 @@
 
     "@openai/codex-win32-x64": ["@openai/codex@0.121.0-win32-x64", "", { "os": "win32", "cpu": "x64" }, "sha512-Fp0ecVOyM+VcBi/y4HVvRzhifO9YqRiHzhV3rhtAppC7flh22WPguLC4kmvXYAR0p3RPzbo35M2CedWnkOT+cw=="],
 
+    "@opencode-ai/sdk": ["@opencode-ai/sdk@1.4.14", "", { "dependencies": { "cross-spawn": "7.0.6" } }, "sha512-X/3Zz61iMh8rwESx6UkxgLted/Fuhld41iqGwTA/+ydVfxbxlsS5iBbUoI/D0fdf1c+EVWpNcF7CHydnvBT3RA=="],
+
     "@oxc-project/types": ["@oxc-project/types@0.124.0", "", {}, "sha512-VBFWMTBvHxS11Z5Lvlr3IWgrwhMTXV+Md+EQF0Xf60+wAdsGFTBx7X7K/hP4pi8N7dcm1RvcHwDxZ16Qx8keUg=="],
 
     "@polka/url": ["@polka/url@0.5.0", "", {}, "sha512-oZLYFEAzUKyi3SKnXvj32ZCEGH6RDnao7COuCVhDydMS9NrCSVXhM79VaKyP5+Zc33m0QXEd2DN3UkU7OsHcfw=="],
@@ -374,6 +385,8 @@
     "@shamu/adapter-codex": ["@shamu/adapter-codex@workspace:packages/adapters/codex"],
 
     "@shamu/adapter-echo": ["@shamu/adapter-echo@workspace:packages/adapters/echo"],
+
+    "@shamu/adapter-opencode": ["@shamu/adapter-opencode@workspace:packages/adapters/opencode"],
 
     "@shamu/adapters-base": ["@shamu/adapters-base@workspace:packages/adapters/base"],
 

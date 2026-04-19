@@ -15,14 +15,18 @@ import { newRunId } from "@shamu/shared/ids";
 import { describe, it } from "vitest";
 import { type CapabilityFeature, supportsCapability } from "../capabilities.ts";
 import { HELLO_TURN } from "./fixtures.ts";
+import { capabilityImmutabilityScenario } from "./scenarios/capability-immutability.ts";
 import { errorSurfacesScenario } from "./scenarios/error-surfaces.ts";
 import { interruptScenario } from "./scenarios/interrupt.ts";
 import { multiTurnScenario } from "./scenarios/multi-turn.ts";
 import { patchMetadataScenario } from "./scenarios/patch-metadata.ts";
+import { pathScopeDispatchScenario } from "./scenarios/path-scope-dispatch.ts";
 import { resumeWarmScenario } from "./scenarios/resume-warm.ts";
+import { runIdOwnershipScenario } from "./scenarios/run-id-ownership.ts";
 import { secretRedactionScenario } from "./scenarios/secret-redaction.ts";
 import { setModelScenario } from "./scenarios/set-model.ts";
 import { setPermissionModeScenario } from "./scenarios/set-permission-mode.ts";
+import { shellAstGateScenario } from "./scenarios/shell-ast-gate.ts";
 import { shutdownScenario } from "./scenarios/shutdown.ts";
 import { spawnBasicScenario } from "./scenarios/spawn-basic.ts";
 import { stressNoLeaksScenario } from "./scenarios/stress-no-leaks.ts";
@@ -35,6 +39,8 @@ export * from "./types.ts";
 
 /** The full ordered list of scenarios. Add new rows here. */
 export const CONTRACT_SCENARIOS: readonly Scenario[] = Object.freeze([
+  capabilityImmutabilityScenario,
+  runIdOwnershipScenario,
   spawnBasicScenario,
   resumeWarmScenario,
   multiTurnScenario,
@@ -48,6 +54,8 @@ export const CONTRACT_SCENARIOS: readonly Scenario[] = Object.freeze([
   errorSurfacesScenario,
   stressNoLeaksScenario,
   secretRedactionScenario,
+  pathScopeDispatchScenario,
+  shellAstGateScenario,
 ]);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
