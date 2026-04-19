@@ -17,6 +17,7 @@
     "./correlation": "./src/correlation.ts",
     "./cost-stamping": "./src/cost-stamping.ts",
     "./errors": "./src/errors.ts",
+    "./harness": "./src/harness.ts",
     "./contract": "./src/contract/index.ts",
     "./contract-tests": "./src/contract-tests/index.ts"
   },

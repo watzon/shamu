@@ -41,21 +41,23 @@
  *
  * If the live-test feedback loop reveals amp wants a simpler shape
  * (`{"text":"..."}`), the `formatUserTurn` helper is the single edit site.
+ *
+ * ### Shared harness
+ *
+ * Event queue, redactor, watchdog, shutdown sequence, envelope threading,
+ * and setModel/setPermissionMode defaults live in `AdapterHandleBase`
+ * (`@shamu/adapters-base/harness`). Shared with Cursor/Gemini/Pi.
  */
 
 import {
-  type AgentEvent,
-  type AgentHandle,
+  AdapterHandleBase,
+  type AdapterHandleBaseOptions,
   type Capabilities,
-  CorrelationState,
-  type HandleHeartbeat,
   type MonotonicClock,
-  type PermissionMode,
   type SpawnOpts,
   type UserTurn,
-  validateEvent,
 } from "@shamu/adapters-base";
-import type { EventId, RunId, SessionId, ToolCallId, TurnId } from "@shamu/shared/ids";
+import type { EventId, SessionId, ToolCallId, TurnId } from "@shamu/shared/ids";
 import { Redactor } from "@shamu/shared/redactor";
 import type { AmpDriver } from "./driver.ts";
 import { decideAmpPermission, type PermissionHandlerOptions } from "./permission-handler.ts";
@@ -68,48 +70,6 @@ import {
 } from "./projection.ts";
 
 const DEFAULT_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
-
-/** Minimal single-consumer event queue, mirroring the OpenCode pattern. */
-class AmpEventQueue {
-  private readonly waiters: Array<(v: IteratorResult<AgentEvent>) => void> = [];
-  private readonly pending: AgentEvent[] = [];
-  private closed = false;
-
-  push(ev: AgentEvent): void {
-    if (this.closed) return;
-    const w = this.waiters.shift();
-    if (w) {
-      w({ value: ev, done: false });
-      return;
-    }
-    this.pending.push(ev);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      const w = this.waiters.shift();
-      if (w) w({ value: undefined, done: true });
-    }
-  }
-
-  async *iterate(): AsyncIterableIterator<AgentEvent> {
-    while (true) {
-      const buffered = this.pending.shift();
-      if (buffered) {
-        yield buffered;
-        continue;
-      }
-      if (this.closed) return;
-      const next = await new Promise<IteratorResult<AgentEvent>>((resolve) => {
-        this.waiters.push(resolve);
-      });
-      if (next.done) return;
-      yield next.value;
-    }
-  }
-}
 
 export interface AmpHandleOptions {
   readonly driver: AmpDriver;
@@ -143,63 +103,45 @@ export function formatUserTurn(text: string): string {
   return JSON.stringify(payload);
 }
 
-export class AmpHandle implements AgentHandle {
-  public readonly runId: RunId;
-  private _sessionId: SessionId | null;
+export class AmpHandle extends AdapterHandleBase<ProjectionState> {
   private readonly driver: AmpDriver;
-  private readonly corr: CorrelationState;
-  private readonly queue = new AmpEventQueue();
-  private readonly redactor: Redactor;
-  private readonly capabilities: Capabilities;
   private readonly permissionOpts: PermissionHandlerOptions;
-  private readonly projState: ProjectionState;
   private readonly projHooks: ProjectionHooks;
-  private readonly sessionSource: "spawn" | "resume" | "fork";
-  private readonly promptTimeoutMs: number;
-
-  private currentModel: string;
-  private lastEventAt = 0;
-  private turnActive = false;
-  private closed = false;
-  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private stdoutDone: Promise<void>;
   private stderrDone: Promise<void>;
 
   constructor(options: AmpHandleOptions) {
-    // G8 — runId is orchestrator-owned.
-    if (!options.opts.runId) {
-      throw new Error("AmpHandle: opts.runId is required (G8)");
-    }
-    this.runId = options.opts.runId;
-    this._sessionId = options.vendorSessionId;
-    this.driver = options.driver;
-    this.capabilities = options.capabilities;
-    this.redactor = options.redactor ?? new Redactor();
-    this.currentModel = options.opts.model ?? "amp-default";
-    this.sessionSource = options.sessionSource;
-    this.promptTimeoutMs = options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
-
-    this.corr = new CorrelationState({
-      runId: this.runId,
-      sessionId: this._sessionId,
-      vendor: options.vendor,
-      ...(options.clock ? { clock: options.clock } : {}),
-      ...(options.newEventId ? { newEventId: options.newEventId } : {}),
-      ...(options.newTurnId ? { newTurnId: options.newTurnId } : {}),
-    });
-
-    this.projState = createProjectionState();
+    const projState = createProjectionState();
     // When resuming, seed the projector's `boundSessionId` so an echo of the
     // session id from amp's first `{type:"system"}` message doesn't rebind
     // and emit a divergent sessionId.
-    if (this._sessionId) {
-      this.projState.boundSessionId = this._sessionId;
+    if (options.vendorSessionId) {
+      projState.boundSessionId = options.vendorSessionId;
     }
+
+    const baseOptions: AdapterHandleBaseOptions<ProjectionState> = {
+      runId: options.opts.runId,
+      initialSessionId: options.vendorSessionId,
+      vendor: options.vendor,
+      logLabel: "AmpHandle",
+      capabilities: options.capabilities,
+      projState,
+      sessionSource: options.sessionSource,
+      redactor: options.redactor ?? new Redactor(),
+      initialModel: options.opts.model ?? "amp-default",
+      promptTimeoutMs: options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+      clock: options.clock,
+      newEventId: options.newEventId,
+      newTurnId: options.newTurnId,
+    };
+    super(baseOptions);
+    this.driver = options.driver;
+
     this.projHooks = {
       modelProvider: () => this.currentModel,
       ...(options.newToolCallId ? { newToolCallId: options.newToolCallId } : {}),
       onSessionBound: (sid) => {
-        this._sessionId = sid;
+        this.bindSessionId(sid);
       },
     };
 
@@ -225,25 +167,12 @@ export class AmpHandle implements AgentHandle {
     });
   }
 
-  get sessionId(): SessionId | null {
-    return this._sessionId;
-  }
-
-  get events(): AsyncIterable<AgentEvent> {
-    return this.queue.iterate();
-  }
-
-  heartbeat(): HandleHeartbeat {
-    return { lastEventAt: this.lastEventAt, seq: this.corr.peekSeq() };
-  }
-
   async send(message: UserTurn): Promise<void> {
     if (this.closed) throw new Error("AmpHandle: send() after shutdown()");
     if (this.turnActive) {
       throw new Error("AmpHandle: send() while a turn is already active");
     }
-    this.turnActive = true;
-    this.armWatchdog();
+    this.beginTurn();
 
     const redactedText = this.redactor.redact(message.text);
     const line = formatUserTurn(redactedText);
@@ -266,102 +195,44 @@ export class AmpHandle implements AgentHandle {
   }
 
   async interrupt(reason?: string): Promise<void> {
-    if (this.closed) return;
-    try {
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "interrupt",
-        requestedBy: "user",
-        delivered: this.turnActive,
-      });
-    } catch {
-      this.corr.startTurn();
-      this.projState.turnOpen = true;
-      try {
-        this.emit({
-          ...this.corr.envelope(),
-          kind: "interrupt",
-          requestedBy: "user",
-          delivered: false,
-        });
-      } catch {
-        // envelope wedged
-      }
-    }
     // No documented in-stream cancel on amp's JSONL surface as of 2026-04-18.
     // Closing stdin asks amp to finish the current turn and exit. The driver's
     // close() chain (called from shutdown) escalates to SIGTERM if needed.
-    try {
+    await this.doInterrupt(reason, async () => {
       await this.driver.closeStdin();
-    } catch {
-      // best-effort
-    }
-    this.forceTurnEnd(reason ?? "interrupted");
-  }
-
-  async setModel(model: string): Promise<void> {
-    if (typeof model !== "string" || model.length === 0) {
-      throw new Error("AmpHandle.setModel: model must be a non-empty string");
-    }
-    // Amp's CLI selects model at spawn time (`amp -x --model <...>`). Mid-run
-    // switching isn't documented; we stash the value for `usage` stamping.
-    // A supervisor wanting a different model should respawn on a fresh
-    // handle with `opts.model = ...`.
-    this.currentModel = model;
-  }
-
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.capabilities.permissionModes.includes(mode)) {
-      throw new Error(`AmpHandle.setPermissionMode: ${mode} not declared in capabilities`);
-    }
-    // Amp declares only "default" today (capabilities.json). The call is
-    // accepted as a no-op to keep the contract surface consistent.
+    });
   }
 
   async shutdown(reason: string): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    if (this.watchdogTimer) {
-      clearTimeout(this.watchdogTimer);
-      this.watchdogTimer = null;
-    }
-    // Emit session_end before the queue closes.
-    try {
-      if (!this.projState.turnOpen) {
-        this.corr.startTurn();
-        this.projState.turnOpen = true;
-      }
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "session_end",
-        reason,
-      });
-      this.corr.endTurn();
-      this.projState.turnOpen = false;
-    } catch {
-      // envelope state wedged — queue-close is the contract.
-    }
-    // Reap driver FIRST — closing stdin unblocks amp, and waiting for the
-    // stdout drainer to complete ensures any trailing lines land in the queue.
-    try {
-      await this.driver.close();
-    } catch {
-      // best-effort
-    }
-    try {
-      await this.stdoutDone;
-    } catch {
-      // ignore
-    }
-    try {
-      await this.stderrDone;
-    } catch {
-      // ignore
-    }
-    this.queue.close();
+    await this.runSharedShutdown(reason, {
+      closeDriver: () => this.driver.close(),
+      // Reap driver first, then wait for the stdout/stderr drainers so any
+      // trailing lines land in the queue before it closes.
+      drainStream: async () => {
+        try {
+          await this.stdoutDone;
+        } catch {
+          // ignore
+        }
+        try {
+          await this.stderrDone;
+        } catch {
+          // ignore
+        }
+      },
+    });
   }
 
   // ---- internals --------------------------------------------------------
+
+  protected override onWatchdogFire(): void {
+    // Close stdin to ask amp to finish + force turn_end so the consumer
+    // advances. The next `send()` will fail with `amp_stdin_failed`
+    // because stdin is closed — that's the correct behavior: the handle
+    // is dead after a watchdog timeout.
+    void this.driver.closeStdin().catch(() => {});
+    this.forceTurnEnd("prompt_watchdog");
+  }
 
   private async consumeStdout(): Promise<void> {
     for await (const line of this.driver.readLines()) {
@@ -430,143 +301,10 @@ export class AmpHandle implements AgentHandle {
     for (const raw of projected) {
       if (raw.kind === "turn_end") {
         this.turnActive = false;
-        if (this.watchdogTimer) {
-          clearTimeout(this.watchdogTimer);
-          this.watchdogTimer = null;
-        }
+        this.watchdog.clear();
         break;
       }
     }
-  }
-
-  private emit(raw: AgentEvent): void {
-    const redacted = this.redactEvent(raw);
-    const validated = validateEvent(redacted);
-    this.lastEventAt = validated.tsWall;
-    this.queue.push(validated);
-  }
-
-  private emitSafely(raw: AgentEvent): void {
-    try {
-      this.emit(raw);
-    } catch {
-      // validation/envelope wedged; swallow so shutdown completes.
-    }
-  }
-
-  private safeEnvelope() {
-    if (!this.projState.turnOpen) {
-      this.corr.startTurn();
-      this.projState.turnOpen = true;
-    }
-    return this.corr.envelope();
-  }
-
-  private forceTurnEnd(stopReason: string): void {
-    if (!this.projState.turnOpen) {
-      this.turnActive = false;
-      if (this.watchdogTimer) {
-        clearTimeout(this.watchdogTimer);
-        this.watchdogTimer = null;
-      }
-      return;
-    }
-    try {
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "usage",
-        model: this.currentModel,
-        tokens: { input: 0, output: 0 },
-        cache: { hits: 0, misses: 0 },
-      });
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "cost",
-        usd: null,
-        confidence: "unknown",
-        source: "subscription",
-      });
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "turn_end",
-        stopReason,
-        durationMs: 0,
-      });
-      this.corr.endTurn();
-    } catch {
-      // envelope wedged
-    }
-    this.projState.turnOpen = false;
-    this.turnActive = false;
-    if (this.watchdogTimer) {
-      clearTimeout(this.watchdogTimer);
-      this.watchdogTimer = null;
-    }
-  }
-
-  private armWatchdog(): void {
-    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
-    this.watchdogTimer = setTimeout(() => {
-      if (this.closed || !this.turnActive) return;
-      // Close stdin to ask amp to finish + force turn_end so the consumer
-      // advances. The next `send()` will fail with `amp_stdin_failed`
-      // because stdin is closed — that's the correct behavior: the handle
-      // is dead after a watchdog timeout.
-      void this.driver.closeStdin().catch(() => {});
-      this.forceTurnEnd("prompt_watchdog");
-    }, this.promptTimeoutMs);
-  }
-
-  private redactEvent(ev: AgentEvent): AgentEvent {
-    const r = (s: string): string => this.redactor.redact(s);
-    switch (ev.kind) {
-      case "reasoning":
-        return { ...ev, text: r(ev.text) };
-      case "assistant_delta":
-        return { ...ev, text: r(ev.text) };
-      case "assistant_message":
-        return { ...ev, text: r(ev.text), stopReason: r(ev.stopReason) };
-      case "tool_call":
-        return { ...ev, args: this.redactArgs(ev.args) };
-      case "tool_result":
-        return { ...ev, summary: r(ev.summary) };
-      case "patch_applied":
-        return ev;
-      case "checkpoint":
-        return { ...ev, summary: r(ev.summary) };
-      case "stdout":
-      case "stderr":
-        return { ...ev, text: r(ev.text) };
-      case "session_end":
-        return { ...ev, reason: r(ev.reason) };
-      case "turn_end":
-        return { ...ev, stopReason: r(ev.stopReason) };
-      case "usage":
-        return { ...ev, model: r(ev.model) };
-      case "cost":
-        return { ...ev, source: r(ev.source) };
-      case "error":
-        return { ...ev, message: r(ev.message), errorCode: r(ev.errorCode) };
-      case "session_start":
-      case "permission_request":
-      case "rate_limit":
-      case "interrupt":
-        return ev;
-    }
-  }
-
-  private redactArgs(args: unknown): unknown {
-    if (args === null || args === undefined) return args;
-    if (typeof args === "string") return this.redactor.redact(args);
-    if (Array.isArray(args)) return args.map((v) => this.redactArgs(v));
-    if (typeof args === "object") {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
-        out[k] = this.redactArgs(v);
-      }
-      return out;
-    }
-    return args;
   }
 }
 

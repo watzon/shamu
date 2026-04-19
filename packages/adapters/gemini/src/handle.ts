@@ -22,23 +22,18 @@
  *    frame. The handle maps those to non-fatal `error` events with
  *    `errorCode: "acp_protocol"` so the run keeps going.
  *
- * Every other piece of plumbing (EventQueue, redactor, G4/G5 permission
- * gate, watchdog, shutdown-close-driver-first) mirrors `CursorHandle`
- * verbatim. See the followup note in `projection.ts` for the
- * consolidation we should do in a shared helper.
+ * Every other piece of plumbing (event queue, redactor pipeline, watchdog,
+ * shutdown-close-driver-first) is owned by `AdapterHandleBase` in
+ * `@shamu/adapters-base/harness`. Shared with Cursor/Amp/Pi.
  */
 
 import {
-  type AgentEvent,
-  type AgentHandle,
+  AdapterHandleBase,
+  type AdapterHandleBaseOptions,
   type Capabilities,
-  CorrelationState,
-  type HandleHeartbeat,
   type MonotonicClock,
-  type PermissionMode,
   type SpawnOpts,
   type UserTurn,
-  validateEvent,
 } from "@shamu/adapters-base";
 import {
   type AcpPermissionDecision,
@@ -51,7 +46,6 @@ import {
 import {
   type EventId,
   newToolCallId as newToolCallIdDefault,
-  type RunId,
   type SessionId,
   type ToolCallId,
   type TurnId,
@@ -68,48 +62,6 @@ import {
 } from "./projection.ts";
 
 const DEFAULT_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
-
-/** Minimal single-consumer event queue, mirroring the Cursor pattern. */
-class GeminiEventQueue {
-  private readonly waiters: Array<(v: IteratorResult<AgentEvent>) => void> = [];
-  private readonly pending: AgentEvent[] = [];
-  private closed = false;
-
-  push(ev: AgentEvent): void {
-    if (this.closed) return;
-    const w = this.waiters.shift();
-    if (w) {
-      w({ value: ev, done: false });
-      return;
-    }
-    this.pending.push(ev);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      const w = this.waiters.shift();
-      if (w) w({ value: undefined, done: true });
-    }
-  }
-
-  async *iterate(): AsyncIterableIterator<AgentEvent> {
-    while (true) {
-      const buffered = this.pending.shift();
-      if (buffered) {
-        yield buffered;
-        continue;
-      }
-      if (this.closed) return;
-      const next = await new Promise<IteratorResult<AgentEvent>>((resolve) => {
-        this.waiters.push(resolve);
-      });
-      if (next.done) return;
-      yield next.value;
-    }
-  }
-}
 
 export interface GeminiHandleOptions {
   readonly driver: GeminiDriver;
@@ -128,58 +80,39 @@ export interface GeminiHandleOptions {
   readonly permissionOptionsOverride?: GeminiPermissionOptions | undefined;
 }
 
-export class GeminiHandle implements AgentHandle {
-  public readonly runId: RunId;
-  private _sessionId: SessionId;
+export class GeminiHandle extends AdapterHandleBase<ProjectionState> {
   private readonly driver: GeminiDriver;
-  private readonly corr: CorrelationState;
-  private readonly queue = new GeminiEventQueue();
-  private readonly redactor: Redactor;
-  private readonly capabilities: Capabilities;
   private readonly permissionOpts: GeminiPermissionOptions;
-  private readonly projState: ProjectionState;
   private readonly projHooks: ProjectionHooks;
-  private readonly sessionSource: "spawn" | "resume" | "fork";
-  private readonly promptTimeoutMs: number;
-
-  private currentModel: string;
-  private lastEventAt = 0;
-  private turnActive = false;
-  private closed = false;
-  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly unsubscribeSessionUpdate: () => void;
   private readonly unsubscribePermission: () => void;
   private readonly unsubscribeProtocolError: () => void;
 
   constructor(options: GeminiHandleOptions) {
-    // G8 — runId is orchestrator-owned.
-    if (!options.opts.runId) {
-      throw new Error("GeminiHandle: opts.runId is required (G8)");
-    }
-    this.runId = options.opts.runId;
-    this._sessionId = options.vendorSessionId;
-    this.driver = options.driver;
-    this.capabilities = options.capabilities;
-    this.redactor = options.redactor ?? new Redactor();
-    this.currentModel = options.opts.model ?? "gemini-default";
-    this.sessionSource = options.sessionSource;
-    this.promptTimeoutMs = options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
-
-    this.corr = new CorrelationState({
-      runId: this.runId,
-      sessionId: this._sessionId,
+    const projState = createProjectionState();
+    const baseOptions: AdapterHandleBaseOptions<ProjectionState> = {
+      runId: options.opts.runId,
+      initialSessionId: options.vendorSessionId,
       vendor: options.vendor,
-      ...(options.clock ? { clock: options.clock } : {}),
-      ...(options.newEventId ? { newEventId: options.newEventId } : {}),
-      ...(options.newTurnId ? { newTurnId: options.newTurnId } : {}),
-    });
+      logLabel: "GeminiHandle",
+      capabilities: options.capabilities,
+      projState,
+      sessionSource: options.sessionSource,
+      redactor: options.redactor ?? new Redactor(),
+      initialModel: options.opts.model ?? "gemini-default",
+      promptTimeoutMs: options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+      clock: options.clock,
+      newEventId: options.newEventId,
+      newTurnId: options.newTurnId,
+    };
+    super(baseOptions);
+    this.driver = options.driver;
 
-    this.projState = createProjectionState();
     this.projHooks = {
       modelProvider: () => this.currentModel,
       ...(options.newToolCallId ? { newToolCallId: options.newToolCallId } : {}),
       onSessionBound: (sid) => {
-        this._sessionId = sid;
+        this.bindSessionId(sid);
       },
     };
 
@@ -202,83 +135,39 @@ export class GeminiHandle implements AgentHandle {
     });
   }
 
-  get sessionId(): SessionId | null {
-    return this._sessionId;
-  }
-
-  get events(): AsyncIterable<AgentEvent> {
-    return this.queue.iterate();
-  }
-
-  heartbeat(): HandleHeartbeat {
-    return { lastEventAt: this.lastEventAt, seq: this.corr.peekSeq() };
-  }
-
   async send(message: UserTurn): Promise<void> {
     if (this.closed) throw new Error("GeminiHandle: send() after shutdown()");
     if (this.turnActive) {
       throw new Error("GeminiHandle: send() while a turn is already active");
     }
-    this.turnActive = true;
-    this.armWatchdog();
+    this.beginTurn();
 
     const redactedText = this.redactor.redact(message.text);
     // Same fire-and-handle-async pattern as Cursor: let `session/update`
     // notifications drive the event loop while the prompt's promise
     // resolves in the background with the terminal usage + stopReason.
-    this.driver.client
-      .prompt(
+    this.watchPromptPromise(
+      this.driver.client.prompt(
         {
-          sessionId: this._sessionId,
+          sessionId: this._sessionId as SessionId,
           prompt: [{ type: "text", text: redactedText }],
         },
         { timeoutMs: this.promptTimeoutMs },
-      )
-      .then((result) => {
-        if (!this.closed) this.onPromptResult(result);
-      })
-      .catch((cause) => {
-        if (this.closed) return;
-        this.emitSafely({
-          ...this.safeEnvelope(),
-          kind: "error",
-          fatal: true,
-          errorCode: "gemini_prompt_failed",
-          message: this.redactor.redact((cause as Error)?.message ?? String(cause)),
-          retriable: false,
-        });
-        this.forceTurnEnd("prompt_error");
-      });
+      ),
+      {
+        onResolved: (result) => this.onPromptResult(result),
+        errorCode: "gemini_prompt_failed",
+      },
+    );
   }
 
   async interrupt(reason?: string): Promise<void> {
-    if (this.closed) return;
-    try {
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "interrupt",
-        requestedBy: "user",
-        delivered: this.turnActive,
-      });
-    } catch {
-      this.corr.startTurn();
-      this.projState.turnOpen = true;
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "interrupt",
-        requestedBy: "user",
-        delivered: false,
-      });
-    }
-    try {
-      await this.driver.client.cancelSession(this._sessionId);
-    } catch {
-      // best-effort
-    }
-    this.forceTurnEnd(reason ?? "interrupted");
+    await this.doInterrupt(reason, async () => {
+      await this.driver.client.cancelSession(this._sessionId as SessionId);
+    });
   }
 
-  async setModel(model: string): Promise<void> {
+  override async setModel(model: string): Promise<void> {
     if (typeof model !== "string" || model.length === 0) {
       throw new Error("GeminiHandle.setModel: model must be a non-empty string");
     }
@@ -319,62 +208,15 @@ export class GeminiHandle implements AgentHandle {
     }
   }
 
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.capabilities.permissionModes.includes(mode)) {
-      throw new Error(`GeminiHandle.setPermissionMode: ${mode} not declared in capabilities`);
-    }
-    // ACP doesn't expose a mid-session permission-mode setter today. Mode
-    // changes land by spawning a fresh handle with the new mode.
-  }
-
   async shutdown(reason: string): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    if (this.watchdogTimer) {
-      clearTimeout(this.watchdogTimer);
-      this.watchdogTimer = null;
-    }
-    // session_end envelope first — consumers should see it before the
-    // queue closes.
-    try {
-      if (!this.projState.turnOpen) {
-        this.corr.startTurn();
-        this.projState.turnOpen = true;
-      }
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "session_end",
-        reason,
-      });
-      this.corr.endTurn();
-      this.projState.turnOpen = false;
-    } catch {
-      // envelope state wedged — queue-close is the contract.
-    }
-    // Close the driver FIRST — this reaps the subprocess and unblocks any
-    // in-flight request promises (they reject with AcpShutdownError).
-    try {
-      await this.driver.close();
-    } catch {
-      // best-effort
-    }
-    // Drop client subscriptions.
-    try {
-      this.unsubscribeSessionUpdate();
-    } catch {
-      // ignore
-    }
-    try {
-      this.unsubscribePermission();
-    } catch {
-      // ignore
-    }
-    try {
-      this.unsubscribeProtocolError();
-    } catch {
-      // ignore
-    }
-    this.queue.close();
+    await this.runSharedShutdown(reason, {
+      closeDriver: () => this.driver.close(),
+      unsubscribe: [
+        this.unsubscribeSessionUpdate,
+        this.unsubscribePermission,
+        this.unsubscribeProtocolError,
+      ],
+    });
   }
 
   // ---- Incoming event plumbing -----------------------------------------
@@ -498,97 +340,25 @@ export class GeminiHandle implements AgentHandle {
       // envelope wedged
     }
     this.turnActive = false;
-    if (this.watchdogTimer) {
-      clearTimeout(this.watchdogTimer);
-      this.watchdogTimer = null;
-    }
+    this.watchdog.clear();
   }
 
   // ---- internal helpers ------------------------------------------------
 
-  private runProjector(ev: AcpSessionUpdate): AgentEvent[] {
+  private runProjector(ev: AcpSessionUpdate) {
     const ctx: ProjectionContext = {
       corr: this.corr,
       state: this.projState,
       sessionSource: this.sessionSource,
-      targetSessionId: this._sessionId,
+      targetSessionId: this._sessionId as SessionId,
       hooks: this.projHooks,
     };
     return projectGeminiEvent(ev, ctx);
   }
 
-  private emit(raw: AgentEvent): void {
-    const redacted = this.redactEvent(raw);
-    const validated = validateEvent(redacted);
-    this.lastEventAt = validated.tsWall;
-    this.queue.push(validated);
-  }
-
-  private emitSafely(raw: AgentEvent): void {
-    try {
-      this.emit(raw);
-    } catch {
-      // validation/envelope wedged; swallow so shutdown completes.
-    }
-  }
-
-  private safeEnvelope() {
-    if (!this.projState.turnOpen) {
-      this.corr.startTurn();
-      this.projState.turnOpen = true;
-    }
-    return this.corr.envelope();
-  }
-
-  private forceTurnEnd(stopReason: string): void {
-    if (!this.projState.turnOpen) {
-      this.turnActive = false;
-      if (this.watchdogTimer) {
-        clearTimeout(this.watchdogTimer);
-        this.watchdogTimer = null;
-      }
-      return;
-    }
-    try {
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "usage",
-        model: this.currentModel,
-        tokens: { input: 0, output: 0 },
-        cache: { hits: 0, misses: 0 },
-      });
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "cost",
-        usd: null,
-        confidence: "unknown",
-        source: "subscription",
-      });
-      this.emit({
-        ...this.corr.envelope(),
-        kind: "turn_end",
-        stopReason,
-        durationMs: 0,
-      });
-      this.corr.endTurn();
-    } catch {
-      // envelope wedged
-    }
-    this.projState.turnOpen = false;
-    this.turnActive = false;
-    if (this.watchdogTimer) {
-      clearTimeout(this.watchdogTimer);
-      this.watchdogTimer = null;
-    }
-  }
-
-  private armWatchdog(): void {
-    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
-    this.watchdogTimer = setTimeout(() => {
-      if (this.closed || !this.turnActive) return;
-      void this.driver.client.cancelSession(this._sessionId).catch(() => {});
-      this.forceTurnEnd("prompt_watchdog");
-    }, this.promptTimeoutMs);
+  protected override onWatchdogFire(): void {
+    void this.driver.client.cancelSession(this._sessionId as SessionId).catch(() => {});
+    this.forceTurnEnd("prompt_watchdog");
   }
 
   private toolCallIdForRequest(req: AcpPermissionRequest): ToolCallId {
@@ -599,58 +369,6 @@ export class GeminiHandle implements AgentHandle {
     const minted = factory ? factory() : newToolCallIdDefault();
     if (vendorId) this.projState.toolCallIds.set(vendorId, minted);
     return minted;
-  }
-
-  private redactEvent(ev: AgentEvent): AgentEvent {
-    const r = (s: string): string => this.redactor.redact(s);
-    switch (ev.kind) {
-      case "reasoning":
-        return { ...ev, text: r(ev.text) };
-      case "assistant_delta":
-        return { ...ev, text: r(ev.text) };
-      case "assistant_message":
-        return { ...ev, text: r(ev.text), stopReason: r(ev.stopReason) };
-      case "tool_call":
-        return { ...ev, args: this.redactArgs(ev.args) };
-      case "tool_result":
-        return { ...ev, summary: r(ev.summary) };
-      case "patch_applied":
-        return ev;
-      case "checkpoint":
-        return { ...ev, summary: r(ev.summary) };
-      case "stdout":
-      case "stderr":
-        return { ...ev, text: r(ev.text) };
-      case "session_end":
-        return { ...ev, reason: r(ev.reason) };
-      case "turn_end":
-        return { ...ev, stopReason: r(ev.stopReason) };
-      case "usage":
-        return { ...ev, model: r(ev.model) };
-      case "cost":
-        return { ...ev, source: r(ev.source) };
-      case "error":
-        return { ...ev, message: r(ev.message), errorCode: r(ev.errorCode) };
-      case "session_start":
-      case "permission_request":
-      case "rate_limit":
-      case "interrupt":
-        return ev;
-    }
-  }
-
-  private redactArgs(args: unknown): unknown {
-    if (args === null || args === undefined) return args;
-    if (typeof args === "string") return this.redactor.redact(args);
-    if (Array.isArray(args)) return args.map((v) => this.redactArgs(v));
-    if (typeof args === "object") {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
-        out[k] = this.redactArgs(v);
-      }
-      return out;
-    }
-    return args;
   }
 }
 

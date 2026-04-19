@@ -15,6 +15,7 @@ export * from "./correlation.ts";
 export * from "./cost-stamping.ts";
 export * from "./errors.ts";
 export * from "./events.ts";
+export * from "./harness.ts";
 export * from "./path-scope.ts";
 export * from "./replay.ts";
 export * from "./shell-gate.ts";
