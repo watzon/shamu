@@ -215,8 +215,19 @@ export class CodexAdapter implements AgentAdapter {
     //   opts.cwd → workingDirectory  (and Codex CLI's --cd)
     //   opts.permissionMode=="acceptEdits" → approvalPolicy="never" +
     //     sandboxMode="workspace-write"; "default" → approvalPolicy="on-request"
+    //
+    // `skipGitRepoCheck: true` is mandatory: the orchestrator owns the
+    // worktree (may or may not be a git repo; doctor-created tmpdirs,
+    // Linear shim worktrees, container mounts). Without this flag the
+    // Codex CLI refuses to run in any non-trusted directory, exits 0
+    // with a single plaintext line on stdout, the SDK emits zero JSONL
+    // events, and the adapter's async iterator hangs without surfacing
+    // the refusal — found during Phase 9.B.1 live smoke (docs/phase-9/
+    // smoke-codex.md). Trust enforcement is shamu's path-scope /
+    // shell-gate (`permission-handler.ts`), not Codex's CWD trust model.
     const threadOpts: ThreadOptions = {
       workingDirectory: opts.cwd,
+      skipGitRepoCheck: true,
     };
     if (opts.model !== undefined) threadOpts.model = opts.model;
     if (opts.permissionMode === "acceptEdits") {
@@ -236,6 +247,31 @@ function defaultCodexFactory(sdkOpts: CodexOptions): CodexLike {
     startThread: (options) => sdk.startThread(options),
     resumeThread: (id, options) => sdk.resumeThread(id, options),
   };
+}
+
+/**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Codex model catalog. Sourced from the `@openai/codex-sdk` README and the
+ * current Codex CLI. The default matches Codex CLI's default model when no
+ * `--model` flag is supplied.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "gpt-5-codex", label: "GPT-5 Codex", default: true },
+    { id: "gpt-5", label: "GPT-5" },
+    { id: "gpt-4.1", label: "GPT-4.1" },
+    { id: "o3", label: "OpenAI o3" },
+  ];
 }
 
 /**

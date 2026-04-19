@@ -231,6 +231,30 @@ export function createAmpAdapter(options: AmpAdapterOptions = {}): AmpAdapter {
 }
 
 /**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Amp model catalog. Sourced from Amp's `amp -x --help` model listing. Amp
+ * routes to its own backend and aliases these to current provider models;
+ * the default tracks Amp's server-side default.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "amp-default", label: "Amp (default routing)", default: true },
+    { id: "amp-reasoning", label: "Amp reasoning" },
+    { id: "amp-fast", label: "Amp fast" },
+  ];
+}
+
+/**
  * Merge `SpawnOpts.env` on top of `vendorOpts.env` with empty-string = delete
  * semantics. Returns `undefined` when neither side contributes. The driver's
  * `defaultEnv` then layers the result on top of the PATH/HOME/XDG_* +

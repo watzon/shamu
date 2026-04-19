@@ -266,6 +266,32 @@ export function createCursorAdapter(options: CursorAdapterOptions = {}): CursorA
 }
 
 /**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Cursor model catalog. Sourced from Cursor Desktop's `agent acp` release
+ * notes; the default tracks the user's active Cursor model. Cursor does
+ * not expose a programmatic list today — operators can always override
+ * via `--model` / `shamu.config.ts`.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "auto", label: "Cursor (auto)", default: true },
+    { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5 (Cursor)" },
+    { id: "gpt-5", label: "GPT-5 (Cursor)" },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (Cursor)" },
+  ];
+}
+
+/**
  * Merge `SpawnOpts.env` on top of `vendorOpts.env` with empty-string = delete
  * semantics. Returns `undefined` when neither side contributes a key (so the
  * caller can omit the field rather than pass an empty map). The driver's

@@ -162,10 +162,11 @@ describe("resolveRoutes", () => {
     expect(routes).toEqual(["/custom"]);
   });
 
-  it("builds `/` + run detail URLs from the seed result", () => {
+  it("builds `/` + `/new-run` + run detail URLs from the seed result", () => {
     const routes = resolveRoutes(fakeSeed(), null);
     expect(routes).toEqual([
       "/",
+      "/new-run",
       "/run/RUN0000000000000000000000001",
       "/run/RUN0000000000000000000000002",
     ]);

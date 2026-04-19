@@ -17,6 +17,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { openDatabase, runsQueries } from "@shamu/persistence";
 import { startServer } from "@shamu/web";
 import { defineCommand } from "citty";
 import { ExitCode, type ExitCodeValue } from "../exit-codes.ts";
@@ -118,10 +119,18 @@ export const uiCommand = defineCommand({
       writeHuman(mode, `  staticDir: ${config.staticDir}`);
     }
 
+    // Phase 9.C: when the local DB has zero runs, the dashboard's default
+    // `/` page is a "no runs yet" empty state — not very useful for a
+    // first-time user. Point them straight at `/new-run` so they can
+    // kick off a swarm without hunting for the form. Falls back to `/`
+    // when there's any run history.
+    const entryPath = hasAnyRuns(config.dbPath) ? "/" : "/new-run";
+    const entryUrl = `${url}${entryPath}`;
+
     if (!args["no-open"]) {
-      launchBrowser(url, mode);
+      launchBrowser(entryUrl, mode);
     } else if (mode === "human") {
-      writeHuman(mode, "  (--no-open set; open the URL manually)");
+      writeHuman(mode, `  (--no-open set; open ${entryUrl} manually)`);
     }
 
     // Stay alive until a signal arrives. The returned promise resolves with
@@ -129,6 +138,31 @@ export const uiCommand = defineCommand({
     return await shutdown;
   },
 });
+
+/**
+ * Best-effort probe: does the local DB have any rows in `runs`? Used by
+ * `ui` to decide whether to auto-open `/new-run` (empty DB) or `/`
+ * (pre-existing history). Any error is treated as "there may be runs" —
+ * we'd rather land on the overview and let the user navigate than flash a
+ * new-run page over the top of their existing history.
+ */
+function hasAnyRuns(dbPath: string): boolean {
+  try {
+    const db = openDatabase(dbPath);
+    try {
+      const rows = runsQueries.listRuns(db);
+      return rows.length > 0;
+    } finally {
+      try {
+        db.close();
+      } catch {
+        /* best-effort */
+      }
+    }
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Best-effort OS browser launch. Uses `open` on darwin, `xdg-open` on linux,
