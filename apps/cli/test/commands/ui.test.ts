@@ -86,11 +86,15 @@ describe("shamu ui", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("--help exits 0 and lists --port, --no-open, --unsafe-bind", () => {
+  it("--help exits 0 and lists --port, --open, --no-open, --force-open, --unsafe-bind", () => {
     const r = runCliSync(["ui", "--help"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("--port");
+    // --open is the new opt-in flag. --no-open is a deprecated no-op kept
+    // for back-compat. --force-open bypasses the TTY guard.
+    expect(r.stdout).toContain("--open");
     expect(r.stdout).toContain("--no-open");
+    expect(r.stdout).toContain("--force-open");
     expect(r.stdout).toContain("--unsafe-bind");
   });
 

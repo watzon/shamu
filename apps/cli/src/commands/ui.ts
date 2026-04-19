@@ -11,9 +11,14 @@
  *   - We register SIGINT/SIGTERM handlers that call `stop()`, then resolve
  *     the command's promise. The command's exit code is ExitCode.OK on a
  *     clean shutdown; ExitCode.INTERNAL if the boot itself throws.
- *   - The browser launch is best-effort: `open` on darwin, `xdg-open` on
- *     linux, otherwise a "please open <url> manually" diag. Detached +
- *     unref'd so the CLI doesn't wait on the GUI.
+ *   - The browser launch is best-effort and OPT-IN. Users must pass
+ *     `--open` to get a browser; non-interactive callers (tests, agent
+ *     subprocesses, daemons — detected via `!process.stdout.isTTY`) are
+ *     always suppressed even under `--open` unless `--force-open` is
+ *     also set. `open` on darwin, `xdg-open` on linux, otherwise a
+ *     "please open <url> manually" diag. Detached + unref'd so the CLI
+ *     doesn't wait on the GUI. `--no-open` is a deprecated no-op kept
+ *     for back-compat.
  */
 
 import { spawn } from "node:child_process";
@@ -35,9 +40,22 @@ export const uiCommand = defineCommand({
       type: "string",
       description: "Dashboard port (overrides $SHAMU_WEB_PORT; defaults to the server's 4711).",
     },
+    open: {
+      type: "boolean",
+      description:
+        "Launch the system browser after the server is up. Default off; must be explicitly requested. Silently ignored when stdout is not a TTY (tests, agent subprocesses, daemons) to prevent stale browser opens on transient ports.",
+      default: false,
+    },
     "no-open": {
       type: "boolean",
-      description: "Print the URL instead of launching a browser.",
+      description:
+        "[deprecated] Retained for back-compat; browser-open is opt-in via --open now. Passing --no-open is a no-op.",
+      default: false,
+    },
+    "force-open": {
+      type: "boolean",
+      description:
+        "Bypass the stdout-is-a-TTY check on --open. Use sparingly — the TTY check is what prevents test/agent subprocesses from leaking stale browser windows.",
       default: false,
     },
     "unsafe-bind": {
@@ -127,10 +145,23 @@ export const uiCommand = defineCommand({
     const entryPath = hasAnyRuns(config.dbPath) ? "/" : "/new-run";
     const entryUrl = `${url}${entryPath}`;
 
-    if (!args["no-open"]) {
+    // Browser auto-launch is opt-in. Two guards:
+    //   1. `--open` must be explicitly requested (default off).
+    //   2. Even with `--open`, suppress when stdout is not a TTY — tests,
+    //      agent subprocesses, and daemons have printed the URL to a pipe,
+    //      and if their caller dies after the `open` spawn, the browser
+    //      opens to a dead server. `--force-open` bypasses the TTY check
+    //      for the rare caller that genuinely wants to launch from a pipe.
+    const openRequested = args.open || args["force-open"];
+    const isInteractive = process.stdout.isTTY ?? false;
+    const shouldOpen = openRequested && (isInteractive || args["force-open"]);
+    if (shouldOpen) {
       launchBrowser(entryUrl, mode);
     } else if (mode === "human") {
-      writeHuman(mode, `  (--no-open set; open ${entryUrl} manually)`);
+      const reason = !openRequested
+        ? "--open not set"
+        : "stdout is not a TTY (pass --force-open to override)";
+      writeHuman(mode, `  (browser not launched: ${reason}; open ${entryUrl} manually)`);
     }
 
     // Stay alive until a signal arrives. The returned promise resolves with
