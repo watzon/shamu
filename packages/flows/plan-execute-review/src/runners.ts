@@ -104,6 +104,15 @@ export interface RegisterRunnersOptions {
   /** CI gate configuration forwarded to `@shamu/ci`. */
   readonly ci?: RegisterRunnersCIOptions;
   /**
+   * Extra env vars forwarded into every adapter spawn the canonical flow
+   * makes. Phase 8.A's Linear daemon uses this to thread
+   * `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` from the per-run egress broker
+   * into each runner's subprocess. Empty-string values delete a key.
+   * When omitted, the flow's behavior is identical to the pre-Phase-8
+   * state (no proxy set).
+   */
+  readonly spawnEnv?: Readonly<Record<string, string>>;
+  /**
    * Test-only adapter factory override. Present so unit tests can inject
    * scripted adapters without reaching into `@shamu/adapter-{claude,codex}`.
    * The `__`-prefix + this doc comment are the full contract: 4.C's loader
@@ -169,6 +178,7 @@ export function registerRunners(registry: RunnerRegistry, opts: RegisterRunnersO
       model: plannerModel,
       workspaceCwd: opts.workspaceCwd,
       ...(opts.codexCliPath !== undefined ? { codexCliPath: opts.codexCliPath } : {}),
+      ...(opts.spawnEnv !== undefined ? { spawnEnv: opts.spawnEnv } : {}),
     };
     return runPlanner(input);
   });
@@ -180,6 +190,7 @@ export function registerRunners(registry: RunnerRegistry, opts: RegisterRunnersO
       model: executorModel,
       workspaceCwd: opts.workspaceCwd,
       ...(opts.anthropicCliPath !== undefined ? { anthropicCliPath: opts.anthropicCliPath } : {}),
+      ...(opts.spawnEnv !== undefined ? { spawnEnv: opts.spawnEnv } : {}),
     };
     return runExecutor(input);
   });
@@ -207,6 +218,7 @@ export function registerRunners(registry: RunnerRegistry, opts: RegisterRunnersO
       ...(opts.codexCliPath !== undefined ? { codexCliPath: opts.codexCliPath } : {}),
       ...(opts.anthropicCliPath !== undefined ? { anthropicCliPath: opts.anthropicCliPath } : {}),
       ...(opts.ci !== undefined ? { ciOptions: opts.ci } : {}),
+      ...(opts.spawnEnv !== undefined ? { spawnEnv: opts.spawnEnv } : {}),
     };
     return runReviewer(input);
   });
@@ -232,6 +244,7 @@ interface PlannerRunnerInput {
   readonly model: string;
   readonly workspaceCwd: string;
   readonly codexCliPath?: string;
+  readonly spawnEnv?: Readonly<Record<string, string>>;
 }
 
 async function runPlanner(input: PlannerRunnerInput): Promise<NodeOutput> {
@@ -244,6 +257,7 @@ async function runPlanner(input: PlannerRunnerInput): Promise<NodeOutput> {
     model: input.model,
     workspaceCwd: input.workspaceCwd,
     ...(input.codexCliPath !== undefined ? { vendorCliPath: input.codexCliPath } : {}),
+    ...(input.spawnEnv !== undefined ? { env: input.spawnEnv } : {}),
   });
   const collected = await runSingleTurn({
     adapter,
@@ -271,6 +285,7 @@ interface ExecutorRunnerInput {
   readonly model: string;
   readonly workspaceCwd: string;
   readonly anthropicCliPath?: string;
+  readonly spawnEnv?: Readonly<Record<string, string>>;
   /** Set when the reviewer re-invokes the executor for another iteration. */
   readonly reviewerFeedback?: string;
   readonly priorExecutorNotes?: string;
@@ -309,6 +324,7 @@ async function invokeExecutor(input: ExecutorRunnerInput): Promise<ExecutorRunne
     model: input.model,
     workspaceCwd: input.workspaceCwd,
     ...(input.anthropicCliPath !== undefined ? { vendorCliPath: input.anthropicCliPath } : {}),
+    ...(input.spawnEnv !== undefined ? { env: input.spawnEnv } : {}),
   });
   const collected = await runSingleTurn({
     adapter,
@@ -448,6 +464,7 @@ interface ReviewerRunnerInput {
   readonly workspaceCwd: string;
   readonly codexCliPath?: string;
   readonly anthropicCliPath?: string;
+  readonly spawnEnv?: Readonly<Record<string, string>>;
   readonly maxIterations: number;
   readonly iterationCounters: Map<string, number>;
   readonly ciRun: CIRunOverride;
@@ -492,6 +509,7 @@ async function runReviewer(input: ReviewerRunnerInput): Promise<NodeOutput> {
       iteration,
       ci: ciOutput,
       ...(input.codexCliPath !== undefined ? { codexCliPath: input.codexCliPath } : {}),
+      ...(input.spawnEnv !== undefined ? { spawnEnv: input.spawnEnv } : {}),
     };
     verdict = await renderReviewerVerdict(renderInput);
 
@@ -516,6 +534,7 @@ async function runReviewer(input: ReviewerRunnerInput): Promise<NodeOutput> {
         ...(input.anthropicCliPath !== undefined
           ? { anthropicCliPath: input.anthropicCliPath }
           : {}),
+        ...(input.spawnEnv !== undefined ? { spawnEnv: input.spawnEnv } : {}),
       };
       const reinvoked = await invokeExecutor(reinvokeInput);
       execution = reinvoked.executorOutput;
@@ -569,6 +588,7 @@ interface RenderVerdictInput {
   readonly reviewerModel: string;
   readonly workspaceCwd: string;
   readonly codexCliPath?: string;
+  readonly spawnEnv?: Readonly<Record<string, string>>;
   readonly signal: AbortSignal;
   readonly task: string;
   readonly plan: PlannerOutput;
@@ -596,6 +616,7 @@ async function renderReviewerVerdict(input: RenderVerdictInput): Promise<Reviewe
     model: input.reviewerModel,
     workspaceCwd: input.workspaceCwd,
     ...(input.codexCliPath !== undefined ? { vendorCliPath: input.codexCliPath } : {}),
+    ...(input.spawnEnv !== undefined ? { env: input.spawnEnv } : {}),
   });
   const collected = await runSingleTurn({
     adapter,
@@ -745,14 +766,22 @@ function makeSpawnOpts(input: {
   readonly model: string;
   readonly workspaceCwd: string;
   readonly vendorCliPath?: string;
+  readonly env?: Readonly<Record<string, string>>;
 }): SpawnOpts {
   const runId: RunId = newRunId();
-  const opts: { runId: RunId; cwd: string; model: string; vendorCliPath?: string } = {
+  const opts: {
+    runId: RunId;
+    cwd: string;
+    model: string;
+    vendorCliPath?: string;
+    env?: Readonly<Record<string, string>>;
+  } = {
     runId,
     cwd: input.workspaceCwd,
     model: input.model,
   };
   if (input.vendorCliPath !== undefined) opts.vendorCliPath = input.vendorCliPath;
+  if (input.env !== undefined) opts.env = input.env;
   return opts;
 }
 

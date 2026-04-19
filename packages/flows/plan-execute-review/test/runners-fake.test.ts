@@ -149,6 +149,11 @@ interface BuildRegistryInput {
    * green CI, is not forced to revise, approves as before).
    */
   readonly ciRun?: CIRunOverride;
+  /**
+   * Forwarded to `RegisterRunnersOptions.spawnEnv`. Lets a test assert that
+   * egress-broker env reaches every runner's `SpawnOpts.env`.
+   */
+  readonly spawnEnv?: Readonly<Record<string, string>>;
 }
 
 interface BuildRegistryResult {
@@ -202,6 +207,7 @@ function buildRegistry(input: BuildRegistryInput): BuildRegistryResult {
     __adapterOverride: override,
     __ciRunOverride: wrappedCiRun,
     ...(input.maxIterations !== undefined ? { maxIterations: input.maxIterations } : {}),
+    ...(input.spawnEnv !== undefined ? { spawnEnv: input.spawnEnv } : {}),
   });
   return { registry, plannerAdapter, executorAdapter, reviewerAdapter, ciCalls };
 }
@@ -758,5 +764,76 @@ describe("loop-predicate runner", () => {
     const out = await runner?.(buildCtx({ nodeKey: "loop" }));
     expect(out?.value).toBe(true);
     expect(out?.costUsd).toBeNull();
+  });
+});
+
+describe("spawnEnv passthrough (Phase 8.A egress-broker wiring)", () => {
+  const PROXY_ENV = {
+    HTTPS_PROXY: "http://127.0.0.1:55123",
+    HTTP_PROXY: "http://127.0.0.1:55123",
+    NO_PROXY: "127.0.0.1,localhost",
+  } as const;
+
+  test("planner runner threads spawnEnv into SpawnOpts.env", async () => {
+    const { registry, plannerAdapter } = buildRegistry({
+      planner: { finalAssistantText: fencedJson(SAMPLE_PLAN) },
+      spawnEnv: PROXY_ENV,
+    });
+    const runner = registry.get("planner");
+    await runner?.(buildCtx({ nodeKey: "plan", initial: { task: "t", repoContext: "ctx" } }));
+    expect(plannerAdapter.handles[0]?.lastSpawnOpts.env).toEqual(PROXY_ENV);
+  });
+
+  test("executor runner threads spawnEnv into SpawnOpts.env", async () => {
+    const { registry, executorAdapter } = buildRegistry({
+      executor: { finalAssistantText: fencedJson(SAMPLE_EXEC) },
+      spawnEnv: PROXY_ENV,
+    });
+    const runner = registry.get("executor");
+    await runner?.(
+      buildCtx({
+        nodeKey: "execute",
+        initial: { task: "t" },
+        priorOutputs: {
+          plan: {
+            ok: true,
+            value: SAMPLE_PLAN,
+            costUsd: null,
+            costConfidence: "unknown",
+            costSource: "codex-subscription",
+          },
+        },
+      }),
+    );
+    expect(executorAdapter.handles[0]?.lastSpawnOpts.env).toEqual(PROXY_ENV);
+  });
+
+  test("reviewer runner threads spawnEnv into SpawnOpts.env", async () => {
+    const { registry, reviewerAdapter } = buildRegistry({
+      reviewer: { finalAssistantText: fencedJson(APPROVE) },
+      spawnEnv: PROXY_ENV,
+    });
+    const runner = registry.get("reviewer");
+    await runner?.(
+      buildCtx({
+        nodeKey: "review",
+        initial: { task: "t" },
+        priorOutputs: {
+          plan: okOutput(SAMPLE_PLAN),
+          execute: okOutput(SAMPLE_EXEC),
+          ci: ciPriorOutput({ status: "green" }),
+        },
+      }),
+    );
+    expect(reviewerAdapter.handles[0]?.lastSpawnOpts.env).toEqual(PROXY_ENV);
+  });
+
+  test("when spawnEnv is omitted, SpawnOpts.env is undefined (no-op default)", async () => {
+    const { registry, plannerAdapter } = buildRegistry({
+      planner: { finalAssistantText: fencedJson(SAMPLE_PLAN) },
+    });
+    const runner = registry.get("planner");
+    await runner?.(buildCtx({ nodeKey: "plan", initial: { task: "t", repoContext: "ctx" } }));
+    expect(plannerAdapter.handles[0]?.lastSpawnOpts.env).toBeUndefined();
   });
 });

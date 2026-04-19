@@ -53,15 +53,12 @@
  *     on the supervisor bus — the existing escalation sink already
  *     handles that variant.
  *
- *   - The canonical flow ({@link runFlowInProcess}) does NOT yet thread
- *     per-spawn env into its adapter runners; the flow's own
- *     `makeSpawnOpts` ignores the env field today. Until that lands,
- *     the broker is started + torn down per run (so its lifecycle is
- *     exercised), but downstream subprocess traffic is NOT routed
- *     through it. Denies therefore come only from traffic the
- *     composition itself originates (currently none). Surfaced as a
- *     followup; the wiring is in place so a thread-through PR on the
- *     canonical flow immediately activates enforcement.
+ *   - The canonical flow ({@link runFlowInProcess}) threads per-spawn env
+ *     into its adapter runners via `FlowRunInput.spawnEnv`, landed as a
+ *     dedicated follow-on after #31. Each adapter spawn in the flow gets
+ *     the broker's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` on `SpawnOpts.env`,
+ *     so denies now fire from any outbound HTTP(S) the vendor subprocess
+ *     makes.
  */
 
 import { dirname, join } from "node:path";
@@ -435,9 +432,8 @@ export async function createLinearRuntime(
       // Per-run egress broker. Denied events flow through the supervisor
       // bus so the existing escalation sink lights up (label flip +
       // incident comment). Broker startup errors are logged but do NOT
-      // abort the run — the flow runs without proxy wiring in that case,
-      // same as before this track. Surfaced as a followup: "harden boot
-      // so broker failure is fatal once env is threaded into runners".
+      // abort the run — the flow runs without proxy wiring in that case.
+      // Surfaced as a followup: "harden boot so broker failure is fatal".
       if (egressPolicy !== null) {
         try {
           brokerResult = await brokerStart({
@@ -545,6 +541,12 @@ export async function createLinearRuntime(
       let outcome: FlowRunOutcome;
       let cancelled = false;
       try {
+        // Thread the per-run broker's proxy env into the flow runner so
+        // the canonical flow's adapter spawns actually route through the
+        // broker. Without this, 8.A's broker lifecycle is a no-op on the
+        // wire (#31 shipped broker start/stop + denied→escalation wiring
+        // but left env-passthrough for this dedicated follow-on).
+        const spawnEnv = brokerResult?.spawnOpts.env;
         outcome = await runFlow({
           moduleSpec,
           task,
@@ -554,6 +556,7 @@ export async function createLinearRuntime(
           flowBus,
           outputMode: "silent",
           signal: runController.signal,
+          ...(spawnEnv !== undefined ? { spawnEnv } : {}),
         });
       } catch (cause) {
         // An AbortSignal-driven cancellation surfaces as a rejection

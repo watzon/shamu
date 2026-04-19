@@ -47,6 +47,15 @@ export interface RegisterRunnersOptions {
   readonly plannerModel?: string;
   readonly executorModel?: string;
   readonly reviewerModel?: string;
+  /**
+   * Extra env vars forwarded into every adapter spawn the flow module
+   * makes. The canonical use is the Phase 8.A per-run egress broker
+   * injecting `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` so the vendor
+   * subprocess routes through the broker. Flow modules are expected to
+   * pass this straight through to `SpawnOpts.env` unmodified — empty
+   * string still deletes a key (see `SpawnOpts.env`'s contract).
+   */
+  readonly spawnEnv?: Readonly<Record<string, string>>;
 }
 
 /**

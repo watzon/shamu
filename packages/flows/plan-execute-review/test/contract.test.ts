@@ -71,6 +71,7 @@ describe("module surface", () => {
       | "executorModel"
       | "reviewerModel"
       | "ci"
+      | "spawnEnv"
       | "__adapterOverride"
       | "__ciRunOverride";
     // All real option keys (sans the __-prefixed test seams) must map into

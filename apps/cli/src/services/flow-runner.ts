@@ -95,6 +95,15 @@ export interface FlowRunInput {
   readonly signal?: AbortSignal;
   /** stdout framing. `"silent"` suppresses all stdout writes. */
   readonly outputMode?: FlowRunnerOutputMode;
+  /**
+   * Supplemental env vars forwarded to every adapter the flow module
+   * spawns. Phase 8.A's Linear daemon fills this with the per-run egress
+   * broker's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` so subprocess network
+   * traffic routes through the broker. The runner merges this into
+   * `registerOpts.spawnEnv`; flow modules thread it into `SpawnOpts.env`.
+   * When omitted, runner behavior is identical to pre-Phase-8 (no proxy).
+   */
+  readonly spawnEnv?: Readonly<Record<string, string>>;
 }
 
 export interface FlowRunOutcome {
@@ -160,6 +169,7 @@ export async function runFlowInProcess(input: FlowRunInput): Promise<FlowRunOutc
   const registerOpts: RegisterRunnersOptions = {
     workspaceCwd: input.workspaceCwd,
     ...parseOpts,
+    ...(input.spawnEnv !== undefined ? { spawnEnv: input.spawnEnv } : {}),
   };
 
   // 3. Resume path: rehydrate state + reuse the prior id.
