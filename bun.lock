@@ -260,6 +260,13 @@
         "@shamu/shared": "workspace:*",
       },
     },
+    "packages/protocol/a2a": {
+      "name": "@shamu/protocol-a2a",
+      "version": "0.0.0",
+      "dependencies": {
+        "@shamu/shared": "workspace:*",
+      },
+    },
     "packages/protocol/acp": {
       "name": "@shamu/protocol-acp",
       "version": "0.0.0",
@@ -542,6 +549,8 @@
     "@shamu/mailbox": ["@shamu/mailbox@workspace:packages/mailbox"],
 
     "@shamu/persistence": ["@shamu/persistence@workspace:packages/persistence"],
+
+    "@shamu/protocol-a2a": ["@shamu/protocol-a2a@workspace:packages/protocol/a2a"],
 
     "@shamu/protocol-acp": ["@shamu/protocol-acp@workspace:packages/protocol/acp"],
 

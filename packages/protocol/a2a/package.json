@@ -1,0 +1,19 @@
+{
+  "name": "@shamu/protocol-a2a",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent-to-Agent (A2A) v1.0 server + client library for Shamu. Signed Agent Cards (Ed25519), JSON-RPC 2.0 over HTTP (POST) + SSE (streaming), and bearer-token auth rooted in the card's issuer DID. Sibling to @shamu/protocol-acp. Self-contained; the supervisor/mailbox wiring lands in a follow-on Phase 8 track.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/shared": "workspace:*"
+  }
+}
