@@ -14,6 +14,47 @@ dependency crashes otherwise). Invoked via the root package alias
 
 See the script header for flag forwarding details.
 
+## `build-release.ts`
+
+Drives `bun build --compile` to produce a single-binary build of the
+`shamu` CLI for distribution (Phase 8.C Track 8.C.2). Emits NDJSON
+progress events on stdout so a CI driver can parse the stream; writes
+the binary plus a matching `<binary>.sha256` file into the output
+directory.
+
+```sh
+# Build for the host target (darwin-arm64 or linux-x64)
+bun scripts/build-release.ts
+
+# Build a specific target
+bun scripts/build-release.ts --target=darwin-arm64
+bun scripts/build-release.ts --target=linux-x64
+
+# Build all supported targets into a custom outdir
+bun scripts/build-release.ts --target=all --outdir=./dist/release
+```
+
+The Claude adapter needs a ~200MB per-platform `claude` CLI binary that
+`bun build --compile` cannot absorb (confirmed in
+`docs/phase-0/bun-compat.md` Test 3); the adapter's
+`ensureClaudeSidecar()` bootstrap downloads and verifies that binary on
+first run. See
+[`docs/phase-8/release-binaries.md`](../docs/phase-8/release-binaries.md)
+for the full release story.
+
+### Smoke test
+
+`scripts/build-release.test.ts` contains a gated smoke that invokes
+`buildOneTarget` against the host architecture into a temp dir and
+asserts the outputs exist. It's gated so it doesn't slow down
+`bun run test`:
+
+```sh
+SHAMU_RELEASE_BUILD_SMOKE=1 bun test scripts/build-release.test.ts
+```
+
+Omit the env flag and the smoke is skipped.
+
 ## `setup-branch-protection.sh`
 
 Bootstraps GitHub branch protection for this repo. Shamu's quality gate

@@ -21,12 +21,14 @@
  * write, so downstream consumers (TUI, dashboard) only wire up once.
  */
 
+import type { SpawnOpts } from "@shamu/adapters-base";
 import { runsQueries, type ShamuDatabase } from "@shamu/persistence";
 import { newRunId } from "@shamu/shared";
 import { defineCommand } from "citty";
 import { ExitCode, type ExitCodeValue } from "../exit-codes.ts";
 import { modeFrom, writeDiag, writeHuman, writeJson } from "../output.ts";
 import { isKnownAdapter, knownAdapterNames, loadAdapter } from "../services/adapters.ts";
+import { resolveClaudeCliPath } from "../services/claude-sidecar-bootstrap.ts";
 import { emitRunCostSummary } from "../services/run-cost.ts";
 import { openRunDatabase } from "../services/run-db.ts";
 import { streamHandle } from "../services/run-driver.ts";
@@ -63,6 +65,11 @@ export const runCommand = defineCommand({
       type: "string",
       description:
         "Directory for the SQLite state file (overrides $SHAMU_STATE_DIR; default .shamu/state).",
+    },
+    "claude-cli": {
+      type: "string",
+      description:
+        "Path to a pre-authenticated Claude CLI binary. Overrides $CLAUDE_CLI_PATH and skips the sidecar bootstrap. Only consulted when --adapter=claude.",
     },
   },
   async run({ args }): Promise<ExitCodeValue> {
@@ -119,7 +126,36 @@ export const runCommand = defineCommand({
       // hand it via SpawnOpts — asserting equality here catches any vendor
       // adapter that tries to fabricate identity (G8 from threat model).
       const runId = newRunId();
-      const handle = await adapter.spawn({ cwd: process.cwd(), runId });
+      let resolvedClaudeCliPath: string | null = null;
+      if (rawAdapter === "claude") {
+        // Resolve the vendor CLI path via the precedence chain:
+        //   --claude-cli > $CLAUDE_CLI_PATH > sidecar bootstrap > PATH.
+        // We import `ensureClaudeSidecar` lazily so the Anthropic SDK's
+        // module-init cost stays off the startup path for other adapters.
+        const { ensureClaudeSidecar } = await import("@shamu/adapter-claude");
+        const resolved = await resolveClaudeCliPath({
+          ...(args["claude-cli"] ? { explicit: args["claude-cli"] } : {}),
+          ensureSidecar: ensureClaudeSidecar,
+          onSidecarError: (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            writeDiag(
+              `run: claude sidecar bootstrap failed, falling back to PATH; error: ${message}`,
+            );
+          },
+        });
+        resolvedClaudeCliPath = resolved.path;
+        svc.services.logger.info("run: resolved claude cli", {
+          source: resolved.source,
+          ...(resolved.path ? { path: resolved.path } : {}),
+          ...(resolved.version ? { version: resolved.version } : {}),
+        });
+      }
+      const spawnOpts: SpawnOpts = {
+        cwd: process.cwd(),
+        runId,
+        ...(resolvedClaudeCliPath ? { vendorCliPath: resolvedClaudeCliPath } : {}),
+      };
+      const handle = await adapter.spawn(spawnOpts);
       if (handle.runId !== runId) {
         writeDiag(
           `run: adapter ${rawAdapter} returned handle.runId=${handle.runId} ` +

@@ -56,6 +56,19 @@ export { composeCacheKey, hashMcpServer, hashString } from "./cache-key.ts";
 export type { ClaudeDriver, ClaudeQueryLike, ClaudeSessionLike } from "./handle.ts";
 export type { ClaudeHookInput, ClaudeRaw } from "./hooks.ts";
 export type { PermissionDecision } from "./permission-handler.ts";
+export {
+  type EnsureClaudeSidecarOptions,
+  type EnsureClaudeSidecarResult,
+  ensureClaudeSidecar,
+  type FetchFn as SidecarFetchFn,
+  type SidecarFs,
+} from "./sidecar.ts";
+export {
+  SIDECAR_DOWNLOAD_URL_TEMPLATE,
+  SIDECAR_PINS,
+  SIDECAR_VERSION,
+  type SidecarPlatform,
+} from "./sidecar-pins.ts";
 
 function loadClaudeCapabilities(): Readonly<Capabilities> {
   const here = dirname(fileURLToPath(import.meta.url));
