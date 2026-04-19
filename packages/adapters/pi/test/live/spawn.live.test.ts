@@ -36,6 +36,10 @@ import { describe, expect, it } from "vitest";
 import { createPiAdapter } from "../../src/index.ts";
 
 const LIVE = process.env.SHAMU_PI_LIVE === "1";
+// Pi's default provider is `google`. If you haven't set up a Google key
+// in Pi's config, pick one of your other configured providers via env.
+const PROVIDER_ID = process.env.SHAMU_PI_PROVIDER_ID;
+const MODEL_ID = process.env.SHAMU_PI_MODEL_ID;
 
 describe.skipIf(!LIVE)("Pi live spawn", () => {
   it("spawns a real `pi --mode rpc`, runs a prompt, drains to turn_end", async () => {
@@ -46,6 +50,8 @@ describe.skipIf(!LIVE)("Pi live spawn", () => {
       vendorOpts: {
         ephemeralSession: true,
         promptTimeoutMs: 60_000,
+        ...(PROVIDER_ID !== undefined ? { providerID: PROVIDER_ID } : {}),
+        ...(MODEL_ID !== undefined ? { modelID: MODEL_ID } : {}),
       },
     });
     try {

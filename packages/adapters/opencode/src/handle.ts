@@ -56,6 +56,23 @@ import {
 } from "./projection.ts";
 
 const DEFAULT_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+/**
+ * Await `promise` but give up after `ms`. Always resolves (never rejects);
+ * on timeout, the returned promise resolves while the underlying promise
+ * continues to run (and its outcome is ignored). Used inside `shutdown()`
+ * so an SDK-level hang can't block the orchestrator from reaping state.
+ */
+function withTimeout(promise: Promise<void>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => resolve(), ms);
+    promise.finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
 
 class OpencodeEventQueue {
   private readonly waiters: Array<(v: IteratorResult<AgentEvent>) => void> = [];
@@ -111,6 +128,20 @@ export interface OpencodeHandleOptions {
   readonly newToolCallId?: (() => ToolCallId) | undefined;
   readonly redactor?: Redactor | undefined;
   readonly promptTimeoutMs?: number | undefined;
+  /**
+   * Upper bound (ms) on each stage of `shutdown()`'s transport reap.
+   * Default 5s. Set higher in environments where the server's own
+   * close path is slow.
+   */
+  readonly shutdownTimeoutMs?: number | undefined;
+  /**
+   * Provider id used by `session.prompt`. Required in production unless
+   * the attached server has a configured default. Omitted → prompt is
+   * sent without provider selection and the server chooses (or fails).
+   */
+  readonly providerID?: string | undefined;
+  /** Model id for the selected provider. Must pair with `providerID`. */
+  readonly modelID?: string | undefined;
   /** Override the permission handler (tests). */
   readonly permissionOptionsOverride?: PermissionHandlerOptions | undefined;
 }
@@ -132,6 +163,9 @@ export class OpencodeHandle implements AgentHandle {
   private readonly projHooks: ProjectionHooks;
   private readonly sessionSource: "spawn" | "resume" | "fork";
   private readonly promptTimeoutMs: number;
+  private readonly shutdownTimeoutMs: number;
+  private readonly providerID: string | undefined;
+  private readonly modelID: string | undefined;
 
   private currentModel: string;
   private lastEventAt = 0;
@@ -153,6 +187,9 @@ export class OpencodeHandle implements AgentHandle {
     this.currentModel = options.opts.model ?? "opencode-default";
     this.sessionSource = options.sessionSource;
     this.promptTimeoutMs = options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
+    this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    this.providerID = options.providerID;
+    this.modelID = options.modelID;
 
     this.corr = new CorrelationState({
       runId: this.runId,
@@ -220,6 +257,8 @@ export class OpencodeHandle implements AgentHandle {
         body: {
           // SDK expects a mutable array here; we build a fresh one per call.
           parts: [{ type: "text" as const, text: redactedText }],
+          ...(this.providerID !== undefined ? { providerID: this.providerID } : {}),
+          ...(this.modelID !== undefined ? { modelID: this.modelID } : {}),
         },
       });
     } catch (cause) {
@@ -329,17 +368,37 @@ export class OpencodeHandle implements AgentHandle {
     // forever on an unresolved promise. In attached-mode this still works:
     // `driver.close()` is a no-op and `eventStreamReturn()` delivers the
     // cancellation to the generator.
-    try {
-      await this.driver.close();
-    } catch {
-      // Best-effort.
-    }
+    //
+    // Both calls below are wrapped in a bounded timeout because we've
+    // observed `createOpencode()`'s SDK-returned `close()` and/or the SSE
+    // generator's `return()` hang indefinitely against the real server
+    // (e.g. when the subprocess is still draining its last message). An
+    // orchestrator losing control of its shutdown path is worse than a
+    // potentially-orphaned server subprocess — the operating system reaps
+    // the child on process exit, and the tests assert no zombies for the
+    // normal path. Default 5s each; configurable via `shutdownTimeoutMs`.
+    const shutdownTimeoutMs = this.shutdownTimeoutMs;
+    await withTimeout(
+      (async () => {
+        try {
+          await this.driver.close();
+        } catch {
+          // best-effort
+        }
+      })(),
+      shutdownTimeoutMs,
+    );
     if (this.eventStreamReturn) {
-      try {
-        await this.eventStreamReturn();
-      } catch {
-        // ignore
-      }
+      await withTimeout(
+        (async () => {
+          try {
+            await this.eventStreamReturn?.();
+          } catch {
+            // best-effort
+          }
+        })(),
+        shutdownTimeoutMs,
+      );
     }
     this.queue.close();
   }

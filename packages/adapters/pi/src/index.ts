@@ -156,6 +156,19 @@ export interface PiVendorOpts {
    * `set_session_name` RPC.
    */
   readonly sessionTitle?: string;
+  /**
+   * Provider name passed as `--provider <name>` on the `pi --mode rpc`
+   * spawn. Pi's default is `google`; set this to one of your configured
+   * providers (`anthropic`, `openai`, `fireworks-ai`, …) if google isn't
+   * your choice. Pi resolves the API key from its own config + env.
+   */
+  readonly providerID?: string;
+  /**
+   * Model id / pattern passed as `--model <pattern>` on the spawn. Supports
+   * Pi's documented pattern syntax (`"provider/id"`, optional `":thinking"`).
+   * Omit to use the provider's default.
+   */
+  readonly modelID?: string;
 }
 
 export interface PiAdapterOptions {
@@ -207,11 +220,26 @@ export class PiAdapter implements AgentAdapter {
     opts: SpawnOpts,
   ): Promise<AgentHandle> {
     const vendorOpts = (opts.vendorOpts ?? {}) as PiVendorOpts;
+    // Translate `providerID` / `modelID` into Pi's native spawn flags and
+    // prepend them to whatever `extraArgs` the caller supplied. Pi's default
+    // provider is `google`; without this surface the adapter is effectively
+    // unusable against any other provider configured in the user's Pi install.
+    const providerModelArgs: string[] = [];
+    if (vendorOpts.providerID !== undefined) {
+      providerModelArgs.push("--provider", vendorOpts.providerID);
+    }
+    if (vendorOpts.modelID !== undefined) {
+      providerModelArgs.push("--model", vendorOpts.modelID);
+    }
+    const mergedExtraArgs: readonly string[] = [
+      ...providerModelArgs,
+      ...(vendorOpts.extraArgs ?? []),
+    ];
     const driverOpts: PiDriverOptions = {
       ...(opts.vendorCliPath !== undefined ? { vendorCliPath: opts.vendorCliPath } : {}),
       cwd: opts.cwd,
       ...(vendorOpts.env !== undefined ? { env: vendorOpts.env } : {}),
-      ...(vendorOpts.extraArgs !== undefined ? { extraArgs: vendorOpts.extraArgs } : {}),
+      ...(mergedExtraArgs.length > 0 ? { extraArgs: mergedExtraArgs } : {}),
       ...(vendorOpts.ephemeralSession !== undefined
         ? { ephemeralSession: vendorOpts.ephemeralSession }
         : {}),

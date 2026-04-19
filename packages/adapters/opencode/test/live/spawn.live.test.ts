@@ -5,20 +5,28 @@
  *
  * When invoked, this test:
  *   1. Calls `createOpencode()` to spawn a real local OpenCode server
- *   2. Requires `SHAMU_OPENCODE_PROVIDER` (e.g., "anthropic") and
- *      `SHAMU_OPENCODE_API_KEY` so the server can actually call an LLM
+ *   2. If `SHAMU_OPENCODE_PROVIDER` + `SHAMU_OPENCODE_API_KEY` are set,
+ *      provisions that provider via `client.auth.set` at spawn time.
+ *      Otherwise, trusts whatever OpenCode has already configured on this
+ *      machine (`~/.local/share/opencode/auth.json`, written by
+ *      `opencode auth login <provider>`). Most developers will have done
+ *      this already; env vars are for CI / automation contexts.
  *   3. Sends a trivial prompt
  *   4. Asserts the event stream contains session_start, at least one
- *      assistant_*, usage, cost, and turn_end
+ *      assistant_*, and turn_end
  *   5. Shuts down; expects no zombie processes
  *
  * This is the end-to-end coverage the scripted contract suite deliberately
  * skips. Invoke with:
  *
+ *   # Simplest (uses OpenCode's own stored auth):
+ *   SHAMU_OPENCODE_LIVE=1 bun test packages/adapters/opencode/test/live/spawn.live.test.ts
+ *
+ *   # Override / CI style:
  *   SHAMU_OPENCODE_LIVE=1 \
  *   SHAMU_OPENCODE_PROVIDER=anthropic \
  *   SHAMU_OPENCODE_API_KEY=sk-ant-... \
- *   bun run test -- --project opencode
+ *   bun test packages/adapters/opencode/test/live/spawn.live.test.ts
  */
 
 import { newRunId } from "@shamu/shared/ids";
@@ -28,21 +36,29 @@ import { createOpencodeAdapter } from "../../src/index.ts";
 const LIVE = process.env.SHAMU_OPENCODE_LIVE === "1";
 const PROVIDER = process.env.SHAMU_OPENCODE_PROVIDER;
 const API_KEY = process.env.SHAMU_OPENCODE_API_KEY;
+// Required when `SHAMU_OPENCODE_LIVE=1` and the attached server has no
+// configured default. Point at one of your configured providers+models.
+const PROVIDER_ID = process.env.SHAMU_OPENCODE_PROVIDER_ID ?? PROVIDER;
+const MODEL_ID = process.env.SHAMU_OPENCODE_MODEL_ID;
 
 describe.skipIf(!LIVE)("OpenCode live spawn", () => {
   it("spawns a real server, runs a prompt, drains to turn_end", async () => {
-    if (!PROVIDER || !API_KEY) {
+    if (!PROVIDER_ID || !MODEL_ID) {
       throw new Error(
-        "SHAMU_OPENCODE_PROVIDER and SHAMU_OPENCODE_API_KEY must be set when SHAMU_OPENCODE_LIVE=1",
+        "SHAMU_OPENCODE_PROVIDER_ID + SHAMU_OPENCODE_MODEL_ID must be set (e.g. PROVIDER_ID=anthropic MODEL_ID=claude-sonnet-4-5). Your OpenCode install's auth.json already has keys; we just need to know which provider+model this run should use.",
       );
     }
     const adapter = createOpencodeAdapter();
+    const authOverride =
+      PROVIDER && API_KEY ? [{ providerId: PROVIDER, apiKey: API_KEY }] : undefined;
     const handle = await adapter.spawn({
       runId: newRunId(),
       cwd: process.cwd(),
       vendorOpts: {
-        auth: [{ providerId: PROVIDER, apiKey: API_KEY }],
+        ...(authOverride !== undefined ? { auth: authOverride } : {}),
         promptTimeoutMs: 60_000,
+        providerID: PROVIDER_ID,
+        modelID: MODEL_ID,
       },
     });
     try {

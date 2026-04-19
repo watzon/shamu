@@ -136,6 +136,19 @@ export interface OpencodeVendorOpts {
   readonly promptTimeoutMs?: number;
   /** Override the initial session title. */
   readonly sessionTitle?: string;
+  /**
+   * Provider id (from OpenCode's `auth.json`, e.g. `"anthropic"`, `"openai"`,
+   * `"opencode"`, `"zai-coding-plan"`, …) to use for every `session.prompt`
+   * in this run. The SDK-spawned server has no default model — omit these
+   * only if you've attached to an existing server that already has one
+   * configured.
+   */
+  readonly providerID?: string;
+  /**
+   * Model id for the selected provider (e.g. `"claude-sonnet-4-5"`,
+   * `"gpt-5"`, …). Required together with `providerID`.
+   */
+  readonly modelID?: string;
 }
 
 export interface OpencodeAdapterOptions {
@@ -223,6 +236,8 @@ export class OpencodeAdapter implements AgentAdapter {
         ...(vendorOpts.promptTimeoutMs !== undefined
           ? { promptTimeoutMs: vendorOpts.promptTimeoutMs }
           : {}),
+        ...(vendorOpts.providerID !== undefined ? { providerID: vendorOpts.providerID } : {}),
+        ...(vendorOpts.modelID !== undefined ? { modelID: vendorOpts.modelID } : {}),
       });
 
       // Defensive G8 invariant — handle.runId must equal opts.runId.
