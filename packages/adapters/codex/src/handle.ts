@@ -229,7 +229,9 @@ export class CodexHandle implements AgentHandle {
       // Thread id becomes known the moment runStreamed returns in some
       // paths (the SDK patches `thread.started` into the first yielded
       // event). We defer binding to the projector which sees every event.
+      let projectedAny = false;
       for await (const raw of streamed.events) {
+        projectedAny = true;
         this.handleRawEvent(raw);
         if (this.shuttingDown) break;
       }
@@ -237,26 +239,59 @@ export class CodexHandle implements AgentHandle {
       if (!this._sessionId && this.projState.threadId) {
         this._sessionId = this.projState.threadId;
       }
+      // Empty-stream guard. A few failure modes produce a zero-event SDK
+      // stream that exits cleanly: Codex's git-repo-check refusing a
+      // non-trusted cwd (fixed upstream by `skipGitRepoCheck: true` in
+      // `index.ts`, but we defend in depth here for future refusal
+      // modes), a vendor binary that prints a diag to stdout and exits
+      // 0, or a session that was killed before its first event landed.
+      // Without this branch the consumer's `for await (handle.events)`
+      // never terminates — the queue stays open waiting for more
+      // pushes, and nothing will ever push. Emit a synthetic error +
+      // turn_end so the iterator can drain and surface the refusal.
+      if (!projectedAny && !this.shuttingDown && !signal.aborted) {
+        this.enqueueError(
+          "vendor_empty_stream",
+          "Codex SDK stream closed with zero events. " +
+            "Common causes: vendor CLI refused to run in this working directory " +
+            "(trusted-directory check, non-git cwd), or the vendor binary exited " +
+            "cleanly without emitting JSONL. Check the worktree path and auth state.",
+        );
+      }
       // Defensive: if the SDK generator completed without emitting a
       // `turn.completed` / `turn.failed`, the projector's `turnOpen` flag
       // is still set and the consumer is stuck waiting for a `turn_end`.
       // Emit a synthetic usage/cost/turn_end so the iterable progresses.
       // Real turn.completed events hit `turnOpen=false` before we get
       // here, so this branch only fires on aborted/abnormal streams.
-      if (this.projState.turnOpen) {
-        this.emitSyntheticTurnEnd("stream_closed");
+      //
+      // With `auto-open` semantics on `emitSyntheticTurnEnd`, we also
+      // close the iterator on the zero-event path — `projState.turnOpen`
+      // is false there too, but the helper opens a fresh turn so the
+      // envelope is well-formed.
+      const needsSyntheticTail = (this.projState.turnOpen || !projectedAny) && !this.shuttingDown;
+      if (needsSyntheticTail) {
+        const reason = projectedAny ? "stream_closed" : "vendor_empty_stream";
+        this.emitSyntheticTurnEnd(reason);
       }
     } catch (cause) {
       // Only surface the error if we're not in a shutdown path (shutdown
       // already emits a session_end; double-emit would violate schema
       // ordering invariants). `AbortError` from our own signal is the
-      // expected cooperative-interrupt completion, not a failure.
-      if (!signal.aborted && !this.shuttingDown) {
+      // expected cooperative-interrupt completion, not a failure — and
+      // the interrupt() path has already emitted its synthetic tail.
+      if (signal.aborted || this.shuttingDown) {
+        // Intentional no-op — nothing to do. The turn tail is already
+        // closed (interrupt path) or will be closed by shutdown().
+      } else {
         this.enqueueError("stream_error", (cause as Error)?.message ?? String(cause));
-      }
-      // Same invariant as the happy-path branch: if the turn is still
-      // open, close it so the consumer's `for await` exits.
-      if (this.projState.turnOpen && !this.shuttingDown) {
+        // Always close the iterator on a caught error so the consumer's
+        // `for await` exits. `emitSyntheticTurnEnd` opens a synthetic
+        // turn when one is not already open; without that we'd leak the
+        // queue on pre-first-event failures (e.g. the SDK throwing a
+        // JSON-parse error on the "Reading prompt from stdin..."
+        // plaintext line the Codex CLI emits when its git-repo-check
+        // refuses).
         this.emitSyntheticTurnEnd("stream_error");
       }
     } finally {
@@ -267,10 +302,19 @@ export class CodexHandle implements AgentHandle {
   /**
    * Emit a synthetic usage/cost/turn_end triple so the consumer's loop
    * can exit when the SDK failed to produce a `turn.completed`. Used on
-   * abnormal stream closure and on interrupt. Safe to call only when a
-   * turn is open.
+   * abnormal stream closure, on pre-first-event failure, and on
+   * interrupt.
+   *
+   * Auto-opens a synthetic session_start + turn when the projector has
+   * not seen real events — covers the empty-stream failure mode where
+   * the vendor CLI exits 0 without emitting any JSONL (Codex
+   * trusted-directory refusal, pre-handshake crash). Without this
+   * auto-open the adapter would never emit the triple on pre-thread
+   * failures and the consumer's `for await` would hang forever waiting
+   * on a queue that no one pushes to.
    */
   private emitSyntheticTurnEnd(stopReason: string): void {
+    this.ensureSyntheticFrame();
     try {
       this.enqueue({
         ...this.corr.envelope(),
@@ -296,8 +340,39 @@ export class CodexHandle implements AgentHandle {
       this.projState.turnOpen = false;
       this.projState.turnStartedAtMonotonic = null;
     } catch {
-      // Envelope threw (turn already closed / unopened). Caller can
-      // proceed; iterable will close when the queue does.
+      // Envelope threw despite ensureSyntheticFrame() (should be
+      // unreachable). Swallow — the iterable will close when the queue
+      // does, at shutdown().
+    }
+  }
+
+  /**
+   * Ensure a synthetic session_start + open turn are in place so the
+   * next envelope call succeeds. Called before any auto-open emission
+   * path (`enqueueError`, `emitSyntheticTurnEnd`). Idempotent — no-op
+   * when a turn is already open.
+   */
+  private ensureSyntheticFrame(): void {
+    if (this.projState.turnOpen) return;
+    // Open a turn FIRST so the session_start envelope is well-formed
+    // (envelope() requires an active turn).
+    this.corr.startTurn();
+    this.projState.turnOpen = true;
+    if (!this.projState.sessionStartEmitted) {
+      this.projState.sessionStartEmitted = true;
+      try {
+        this.enqueue({
+          ...this.corr.envelope(),
+          // `source: "spawn"` even on synthetic frames from the spawn
+          // path; on resume the earlier emitResumeSessionStart() would
+          // have already set sessionStartEmitted=true.
+          kind: "session_start",
+          source: this.sessionSource,
+        });
+      } catch {
+        // Envelope threw; continue — the subsequent turn_end still
+        // closes the iterator.
+      }
     }
   }
 
@@ -355,6 +430,12 @@ export class CodexHandle implements AgentHandle {
   }
 
   private enqueueError(errorCode: string, message: string): void {
+    // Ensure an envelope is valid: open a synthetic frame if no turn is
+    // currently open. Without this, a pre-first-event failure (SDK
+    // JSON-parse throw before thread.started) has no envelope and the
+    // error event is silently dropped — the consumer sees nothing and
+    // hangs on the iterator.
+    this.ensureSyntheticFrame();
     try {
       const envelope = this.corr.envelope();
       this.enqueue({
@@ -366,8 +447,7 @@ export class CodexHandle implements AgentHandle {
         retriable: false,
       });
     } catch {
-      // If we're outside a turn the envelope call throws; swallow — the
-      // caller's error surfaces via the returned Promise from `send()`.
+      // Unreachable after ensureSyntheticFrame — defensive fall-through.
     }
   }
 

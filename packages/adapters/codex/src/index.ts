@@ -215,8 +215,19 @@ export class CodexAdapter implements AgentAdapter {
     //   opts.cwd → workingDirectory  (and Codex CLI's --cd)
     //   opts.permissionMode=="acceptEdits" → approvalPolicy="never" +
     //     sandboxMode="workspace-write"; "default" → approvalPolicy="on-request"
+    //
+    // `skipGitRepoCheck: true` is mandatory: the orchestrator owns the
+    // worktree (may or may not be a git repo; doctor-created tmpdirs,
+    // Linear shim worktrees, container mounts). Without this flag the
+    // Codex CLI refuses to run in any non-trusted directory, exits 0
+    // with a single plaintext line on stdout, the SDK emits zero JSONL
+    // events, and the adapter's async iterator hangs without surfacing
+    // the refusal — found during Phase 9.B.1 live smoke (docs/phase-9/
+    // smoke-codex.md). Trust enforcement is shamu's path-scope /
+    // shell-gate (`permission-handler.ts`), not Codex's CWD trust model.
     const threadOpts: ThreadOptions = {
       workingDirectory: opts.cwd,
+      skipGitRepoCheck: true,
     };
     if (opts.model !== undefined) threadOpts.model = opts.model;
     if (opts.permissionMode === "acceptEdits") {
