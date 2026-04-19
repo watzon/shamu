@@ -112,6 +112,14 @@
         "@shamu/shared": "workspace:*",
       },
     },
+    "packages/adapters/pi": {
+      "name": "@shamu/adapter-pi",
+      "version": "0.0.0",
+      "dependencies": {
+        "@shamu/adapters-base": "workspace:*",
+        "@shamu/shared": "workspace:*",
+      },
+    },
     "packages/ci": {
       "name": "@shamu/ci",
       "version": "0.0.0",
@@ -426,6 +434,8 @@
     "@shamu/adapter-gemini": ["@shamu/adapter-gemini@workspace:packages/adapters/gemini"],
 
     "@shamu/adapter-opencode": ["@shamu/adapter-opencode@workspace:packages/adapters/opencode"],
+
+    "@shamu/adapter-pi": ["@shamu/adapter-pi@workspace:packages/adapters/pi"],
 
     "@shamu/adapters-base": ["@shamu/adapters-base@workspace:packages/adapters/base"],
 
