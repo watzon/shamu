@@ -166,11 +166,23 @@ class AcpClientImpl implements AcpClient {
   }
 
   newSession(params: AcpNewSessionParams): Promise<AcpNewSessionResult> {
-    return this.sendRequest<AcpNewSessionResult>("session/new", params);
+    // ACP spec requires `mcpServers` on `session/new` (empty array is valid).
+    // Defaulting here so adapters that don't mediate MCP themselves still
+    // produce a well-formed request. Real Cursor + Gemini ACP servers reject
+    // the call with -32603 Internal Error when the field is absent.
+    const wire: AcpNewSessionParams = {
+      ...params,
+      mcpServers: params.mcpServers ?? [],
+    };
+    return this.sendRequest<AcpNewSessionResult>("session/new", wire);
   }
 
   async loadSession(params: AcpLoadSessionParams): Promise<void> {
-    await this.sendRequest("session/load", params);
+    const wire: AcpLoadSessionParams = {
+      ...params,
+      mcpServers: params.mcpServers ?? [],
+    };
+    await this.sendRequest("session/load", wire);
   }
 
   prompt(params: AcpPromptParams, opts: { timeoutMs?: number } = {}): Promise<AcpPromptResult> {
