@@ -1,14 +1,16 @@
 # Shamu — Session Handoff
 
-**Last updated:** 2026-04-19 (Phase 8 complete: 8.A autonomous loop + 8.B A2A v1 + all five 8.C sub-tracks landed. Two owed manual steps: 24h soak on staging Linear + signed single-binary release.)
+**Last updated:** 2026-04-19 (Phase 8 complete + Phase 9 drafted. Post-Phase-8 testing surfaced that only the Claude harness resolves its vendor CLI without explicit flags or env vars; Phase 9 addresses drivability — shared CLI resolver (9.A), per-adapter live smokes (9.B), interactive orchestrator surface on the web dashboard (9.C). Starting with 9.A next session.)
 
 Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) for the full pipeline; this file is the snapshot of where we are right now.
 
 ## TL;DR
 
-**Phase 8 is done.** Autonomous Linear-driven daemon with bounded concurrency + graceful drain + per-run egress broker (8.A); A2A v1 protocol package with Signed Agent Cards + JSON-RPC + SSE + bearer tokens bound to issuer DIDs (8.B); `shamu doctor` extended with audit-chain verify + broker reachability + NTP clock-skew + webhook probe + cloudflared tunnel scope (8.C.1); `bun build --compile` release path + Claude sidecar bootstrap (8.C.2); web-dashboard screenshot CI per PR (8.C.3); rewritten README + architecture diagram + CONTRIBUTING + threat-model summary (8.C.4); opt-in Docker-backed egress broker with hard isolation (8.C.5). 29 workspace packages. `CI / ubuntu-latest` remains the sole branch-protection required check; `macos-latest` and all `contract:<vendor>` jobs are additive.
+**Phase 8 is closed; Phase 9 opens next.** Phase 8 shipped: autonomous Linear-driven daemon with bounded concurrency + graceful drain + per-run egress broker (8.A); A2A v1 protocol package with Signed Agent Cards + JSON-RPC + SSE + bearer tokens bound to issuer DIDs (8.B); `shamu doctor` extended with audit-chain verify + broker reachability + NTP clock-skew + webhook probe + cloudflared tunnel scope (8.C.1); `bun build --compile` release path + Claude sidecar bootstrap (8.C.2); web-dashboard screenshot CI per PR (8.C.3); rewritten README + architecture diagram + CONTRIBUTING + threat-model summary (8.C.4); opt-in Docker-backed egress broker with hard isolation (8.C.5). 29 workspace packages. `CI / ubuntu-latest` remains the sole branch-protection required check; `macos-latest` and all `contract:<vendor>` jobs are additive.
 
-Two owed manual steps: 24-hour autonomous soak against a staging Linear project (infrastructure + ops doc shipped at `docs/phase-8/soak-test.md`; user owns webhook + credentials); signed single-binary release (build script + sidecar bootstrap ready at `scripts/build-release.ts`; user owns Apple Developer ID signing cert).
+**Phase 9 opens drivability gaps.** Testing revealed only Claude auto-resolves its CLI; Codex (and by extension every non-Claude adapter) errors out with `requires either SpawnOpts.vendorCliPath or CODEX_API_KEY` because `run.ts` only wires the path flag for Claude. The CLI also has no `--model` flag, and the web dashboard is read-only. Phase 9 draft in PLAN.md covers: (9.A) shared `resolveVendorCli` in `@shamu/adapters-base` + uniform `--<vendor>-cli`/`--model` flags + `shamu.config.ts` per-adapter block + `shamu doctor --resolve-clis`; (9.B) six per-adapter live-smoke PRs + a triage digest; (9.C) interactive orchestrator surface on `apps/web` — `POST /api/runs`, adapter + model selectors, prompt form, live swarm view, interrupt button, CSRF on mutations.
+
+Two owed manual steps from Phase 8 remain: 24-hour autonomous soak against a staging Linear project (infrastructure + ops doc shipped at `docs/phase-8/soak-test.md`; user owns webhook + credentials); signed single-binary release (build script + sidecar bootstrap ready at `scripts/build-release.ts`; user owns Apple Developer ID signing cert).
 
 ## Key commits
 
@@ -60,6 +62,10 @@ Two owed manual steps: 24-hour autonomous soak against a staging Linear project 
 | 8.C.3 | Screenshot CI for web dashboard | ✅ (#35) |
 | 8.C.4 | Docs — README + architecture + CONTRIBUTING + threat-model | ✅ (#33) |
 | 8.C.5 | Container-based egress enforcement (opt-in) | ✅ (#37) |
+| 9.A | Shared vendor-CLI resolver + `--model`/`--<vendor>-cli` flags + doctor integration | drafted (PLAN.md), not started |
+| 9.B.1–9.B.6 | Per-adapter live smokes (codex, opencode, cursor, gemini, amp, pi) | drafted, blocked on 9.A |
+| 9.B.7 | Adapter smoke triage digest | drafted, blocked on 9.B.1–9.B.6 |
+| 9.C | Interactive orchestrator surface on `apps/web` | drafted, blocked on 9.A |
 
 ## What's in flight
 
@@ -71,7 +77,18 @@ Nothing.
 
 ## What's next
 
-Phase 8 is closed. Code-level exit criteria met; two owed manual steps remain:
+**Phase 9.A — Shared vendor-CLI resolver.** Serial track; unblocks every other Phase 9 deliverable. Scope in PLAN.md §§ "Phase 9 → Track 9.A". Minimum deliverables:
+
+- `packages/adapters/base/src/vendor-cli-resolver.ts` — `resolveVendorCli({ adapter, explicit, env, configEntry })` with precedence chain (flag → env var → `shamu.config.ts` → known install locations → `PATH`); returns `{ path, source, version? }` or throws `VendorCliNotFoundError` listing every candidate checked.
+- Per-adapter `VendorCliDescriptor` exports (binary names + candidate locations: npm/bun/pnpm globals, brew Intel + Apple Silicon, `~/.local/bin`, vendor-specific paths; optional version + auth probes).
+- `apps/cli/src/commands/run.ts` + `resume.ts` — uniform `--<vendor>-cli <path>` and `--model <name>` flags. Remove Claude-only wiring; sidecar bootstrap becomes a descriptor candidate.
+- `shamu.config.ts` schema gains `adapters: Record<VendorName, { cliPath?; cliVersionConstraint?; envOverrides?; defaultModel? }>` (Zod in `config/schemas/`).
+- `shamu doctor --resolve-clis` surface (and default-run block).
+- Contract-test additions proving the precedence chain per adapter + structured error on missing binary.
+
+**Phase 9.B + 9.C** fan out in parallel once 9.A merges. See PLAN.md for per-track scope.
+
+**Phase 8 owed manual steps** (code-exit criteria met; user-owned):
 
 1. **24-hour autonomous soak** on a staging Linear project. Infrastructure ready at `apps/cli/scripts/soak-daemon.ts` (fake-Linear fast soak validates the daemon end-to-end in 60s). Ops doc at `docs/phase-8/soak-test.md` lists required env + webhook config. User owns the staging Linear project + `LINEAR_API_KEY` + `LINEAR_WEBHOOK_SECRET` + cloudflared tunnel.
 2. **Signed single-binary release** — `scripts/build-release.ts` compiles binaries; Claude sidecar bootstrap pins placeholder SHAs in `packages/adapters/claude/src/sidecar-pins.ts`. A release-automation pipeline locks a Claude CLI version, computes real SHA256s per platform, updates the pin file, and signs+notarizes the shamu binary. User owns the Apple Developer ID cert.
@@ -226,7 +243,9 @@ Still open:
 
 ## Open questions
 
-None blocking.
+- **9.B adapter smoke ordering.** Does 9.B.1 (Codex) block on 9.A merge, or should a parallel pre-resolver smoke run with an explicit `--codex-cli` flag land first so we have a real-smoke baseline before the resolver refactor? Default assumption: smokes wait for 9.A so every adapter goes through the same resolver on its first live run.
+- **9.C interrupt semantics.** CLI's SIGINT path drains the handle then exits 13; the web dashboard's interrupt button will produce the same `interrupt` event, but the UI has no process to exit — does it return to `/run/<id>` in a "cancelled" terminal state, or offer a resume button? Leaning toward terminal + resume link; confirm during 9.C implementation.
+- **Gemini + Amp smoke gating.** Gemini needs the Google-account ToS appeal; Amp needs paid credits. Ship 9.B.4 / 9.B.5 with "blocked on vendor" stubs in the digest, or defer those two smokes to a later phase and close 9.B with four? Leaning toward shipping stubs so the digest captures the full matrix.
 
 ## Already-answered decisions
 

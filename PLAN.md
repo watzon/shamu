@@ -813,6 +813,50 @@ Supervisor + swarm-mailbox integration of A2A is explicitly a follow-on track �
 
 ---
 
+### Phase 9 — Drivability: vendor CLI resolution, adapter triage, interactive orchestrator
+
+Phase 8 closed the autonomous-daemon branch of the product — Linear ticket in, swarm out, observe via read-only dashboard. Phase 9 closes the **interactive** branch: a human can pick any adapter, give it a task from a GUI, and watch the orchestrator spawn sub-agents live. The gating problem surfaced post-Phase-8 is that only the Claude harness resolves its vendor CLI cleanly; every other adapter demands either an explicit `vendorCliPath` the CLI doesn't expose or an env-var-only auth path, so the product isn't actually drivable by a new user with a standard toolchain. Three tracks — 9.A unblocks testing, 9.B hardens the result, 9.C makes the orchestrator user-facing.
+
+**Track 9.A — Shared vendor-CLI resolver (Serial; unblocks 9.B and 9.C)**
+- [ ] `packages/adapters/base/src/vendor-cli-resolver.ts`: shared `resolveVendorCli({ adapter, explicit, env, configEntry })` walking a precedence chain — (1) explicit flag, (2) env var (`<VENDOR>_CLI_PATH`), (3) `shamu.config.ts` entry under `adapters.<vendor>.cliPath`, (4) per-adapter known install locations, (5) `Bun.which()` / `PATH` lookup. Returns `{ path, source, version? }` and throws a `VendorCliNotFoundError` with every candidate that was tried.
+- [ ] Per-adapter `VendorCliDescriptor` exported from each adapter package — binary name(s), candidate install locations (npm global under `~/.bun/install/global/node_modules/<pkg>/bin/<bin>`, `~/.npm-global/bin/<bin>`, pnpm under `~/.local/share/pnpm/`, homebrew `/opt/homebrew/bin/<bin>` and `/usr/local/bin/<bin>`, XDG `~/.local/bin/<bin>`, plus vendor-specific locations like Cursor's `~/.local/bin/agent`), optional version-probe (`<bin> --version` → parse) + semver range, optional auth-probe (e.g. `codex whoami`). Descriptors are data, not code — the resolver is the only executor.
+- [ ] `apps/cli/src/commands/run.ts` + `resume.ts`: uniform `--<vendor>-cli <path>` flags for every known adapter (codex, opencode, cursor, gemini, amp, pi) alongside the existing `--claude-cli`; flags feed `explicit` into `resolveVendorCli`. Remove the Claude-only special-case wiring; the sidecar bootstrap becomes one more candidate source in the Claude descriptor.
+- [ ] `apps/cli/src/commands/run.ts` + `resume.ts`: `--model <name>` flag that threads into `SpawnOpts.model`. The plumbing already exists (`SpawnOpts.model?: string` on the base contract + per-handle `setModel`); only the CLI entry point is missing. Unknown-model validation defers to the adapter — invalid names surface as the vendor's own error on first turn.
+- [ ] `shamu.config.ts` schema gains `adapters: Record<VendorName, { cliPath?: string; cliVersionConstraint?: string; envOverrides?: Record<string,string>; defaultModel?: string }>`. Zod schema in `config/schemas/`. CLI `--model` flag wins over `defaultModel`; `defaultModel` wins over the adapter's hard-coded default.
+- [ ] `shamu doctor`: new `--resolve-clis` flag (and a default-surface block) that runs `resolveVendorCli` for every shipped adapter, prints the winning source + version, lists every candidate that was checked, and flags version-constraint failures. Feeds the existing audit-chain / egress / webhook health model.
+- [ ] Contract-test additions in the shared harness: a resolver-mock case per adapter proving (a) flag wins over env wins over config wins over discovery, (b) version-probe failure raises before spawn, (c) missing binary produces a structured error listing every checked path.
+- [ ] Migration: the Codex adapter's existing `resolveCodexAuth` narrows to auth (API key vs OAuth-via-CLI); CLI-path resolution moves to the shared resolver. Claude's `resolveClaudeCliPath` collapses into a descriptor; the sidecar-bootstrap function becomes the Claude descriptor's last-chance candidate hook.
+
+**Track 9.B — Adapter smoke triage (Parallel after 9.A lands)**
+
+Goal: every shipped adapter survives a live "hello world" task end-to-end on a clean machine. Each adapter gets a dedicated sub-track; each is a single-PR deliverable. Scope is *discovery + fix*, not "rewrite the adapter" — surprises become followups with fresh phase scope.
+
+- [ ] 9.B.1 — Codex smoke + fix. Run one live turn under both auth paths (OAuth CLI + `CODEX_API_KEY`); capture findings in `docs/phase-9/adapter-smoke.md`; fix any defects surfaced.
+- [ ] 9.B.2 — OpenCode smoke + fix. Live turn via the SSE-HTTP transport with a real provider key set through `client.auth.set`.
+- [ ] 9.B.3 — Cursor smoke + fix. Requires Cursor Desktop installed; live turn via `agent acp`.
+- [ ] 9.B.4 — Gemini smoke + fix. Gated on the user's Google-account ToS appeal (listed in HANDOFF vendor followups); skip if still blocked, note in smoke doc.
+- [ ] 9.B.5 — Amp smoke + fix. Requires paid credits for non-interactive `amp -x`; gated on the user provisioning credits.
+- [ ] 9.B.6 — Pi smoke + fix. Live turn via JSONL-stdio; validate `--no-session` opt-out path too.
+- [ ] 9.B.7 — Triage digest. One PR collating every smoke-finding into `docs/phase-9/adapter-smoke.md`, producing per-adapter followups for anything beyond single-PR scope, and updating `docs/phase-7/capability-matrix.md` with any declared-vs-actual deltas the smoke uncovered.
+
+**Track 9.C — Interactive orchestrator surface on `apps/web` (Parallel with 9.B after 9.A)**
+
+The web dashboard today is read-only over the SQLite event projection. 9.C makes it a control surface for starting runs — a prompt box that spawns a `flow run` with a user-chosen adapter + role, then streams the swarm back live via the existing SSE channel. This closes the original product vision: GUI → orchestrator → sub-agent swarm, observable in one place.
+
+- [ ] **Server:** new `POST /api/runs` endpoint in `apps/web/src/server/` that accepts `{ task, adapter, role, flow?, egressPolicy? }`, invokes `@shamu/core-flow`'s flow-runner via the same `withEgressBroker` composition the CLI uses, returns `{ runId, url }`. Shares the `resolveVendorCli` path from 9.A — a missing CLI fails fast with a structured error surfaced into the UI. Keeps the `127.0.0.1`-only binding; no auth added.
+- [ ] **Adapter selector UI:** SolidJS component that lists every adapter whose `resolveVendorCli` succeeds on this machine (via `GET /api/adapters/available`, backed by the same resolver). Unavailable adapters appear disabled with a one-line diagnostic from the resolver's error struct.
+- [ ] **Model selector:** `GET /api/adapters/:vendor/models` returns the adapter's model list (each adapter package exports a `listModels(): { id: string; label: string; default?: boolean }[]` — Claude + Codex pull from the SDK's catalog where available, others ship a static list sourced from the vendor README and version-stamped in the adapter's `package.json`). UI dropdown is populated on adapter change, preselects `defaultModel` from `shamu.config.ts` if set, else the adapter's marked default.
+- [ ] **Prompt form:** `apps/web/src/frontend/routes/new-run.tsx` — task textarea, adapter dropdown, model dropdown, role dropdown, optional flow picker, submit → `POST /api/runs` (threads `model` into `SpawnOpts.model`) → redirect to `/run/<id>`.
+- [ ] **Live swarm view:** the existing `run-detail.tsx` already subscribes to SSE; extend it with a sibling-runs panel that shows all agents spawned under the same flow (reads from `runs` table by parent/flow id). Reuses the existing `format.ts` event-formatter.
+- [ ] **Interrupt button:** `POST /api/runs/:id/interrupt` wiring to the supervisor. Matches the CLI's SIGINT path; exit code taxonomy preserved.
+- [ ] **SSE-subscriber auth invariant:** the existing SSE Origin allow-list stays; a new `POST` endpoint requires a same-origin `Origin` header and a short-lived CSRF token minted on page load (double-submit cookie pattern). No session cookies beyond the CSRF token — `127.0.0.1`-bound single-user design holds.
+- [ ] **Screenshot-CI update:** `.github/workflows/screenshots.yml` captures the new-run page + an active-run page with the prompt flow exercised via a stubbed adapter, so reviewers see UI regressions at PR time.
+- [ ] **`shamu ui` auto-opens `/new-run`** when no runs exist on the local DB (quality-of-life; falls back to `/` when there's run history).
+
+**Exit:** (1) on a clean macOS or Linux machine with each vendor CLI installed via its officially documented path (npm global, brew, bun global, or a vendor-native installer), `shamu run --adapter <any>` succeeds with zero flags or env vars beyond the vendor's own auth mechanism; (2) `docs/phase-9/adapter-smoke.md` carries a real-turn proof per adapter (plus a clear "blocked on vendor" note for Gemini / Amp if their external blockers remain); (3) `shamu ui` exposes a prompt box that spawns a supervised swarm and streams it live; (4) screenshot CI covers the new control-surface pages.
+
+---
+
 ## Parallelization summary
 
 | Phase | Max parallel tracks | Critical path |
@@ -826,8 +870,9 @@ Supervisor + swarm-mailbox integration of A2A is explicitly a follow-on track �
 | 6 | 2 | Auth + webhooks → conventions → E2E |
 | 7 | **6** | Adapter fan-out (5 vendors) + web dashboard → capability matrix |
 | 8 | 2 | Autonomous loop → ops polish |
+| 9 | **7** (after 9.A lands) | Shared resolver → 6 adapter smokes in parallel + interactive UI |
 
-Phases 0, 3, and 7 are the biggest parallelization wins — up to 5, 3, and 6 concurrent workstreams respectively. Once the shamu swarm is dogfooding itself (Phase 3 onward), those tracks are natural assignments for parallel agent workers: one Claude executor per track, supervised. Phase 7's six-wide fan-out (5 adapters + web + broker, running in parallel once the two reference adapters are paved) is what takes the overall calendar time from "months" to "days, if the swarm holds together."
+Phases 0, 3, 7, and 9 are the biggest parallelization wins — up to 5, 3, 6, and 7 concurrent workstreams respectively. Once the shamu swarm is dogfooding itself (Phase 3 onward), those tracks are natural assignments for parallel agent workers: one Claude executor per track, supervised. Phase 7's six-wide fan-out (5 adapters + web + broker, running in parallel once the two reference adapters are paved) is what takes the overall calendar time from "months" to "days, if the swarm holds together." Phase 9's fan-out is similar: once the shared resolver lands, the six adapter smokes plus the web control-surface track run in parallel.
 
 ## Quality bars (enforced by CI, not etiquette)
 
@@ -863,4 +908,4 @@ None blocking. (Historical: A2A-in-v1 answered 2026-04-18; `vendorCliPath` Phase
 
 ## Immediate next step
 
-Phase 8 warm-ups cleared (#27 `shamu ui` + #28 egress-broker composition wiring). Phase 8.A (autonomous loop on Linear webhooks) and 8.B (A2A server) are both unblocked and can run in parallel. Broker wiring for 8.A is a single `withEgressBroker({ policy, baseSpawnOpts })` call from `@shamu/core-composition`. See HANDOFF.md for the live status table + carried followups.
+Phase 8 closed pending two owed manual steps (24h soak + signed release). Phase 9 opened after post-Phase-8 testing surfaced that only the Claude harness resolves its vendor CLI without explicit flags or env vars — every other adapter demands either a CLI flag the runner doesn't expose or an env-var-only auth path, so the product isn't yet drivable from the UI. Start with **9.A — shared vendor-CLI resolver** (serial; unblocks everything else); 9.B.1–9.B.6 adapter smokes and 9.C interactive orchestrator surface fan out in parallel once 9.A lands. See HANDOFF.md for the live status table + carried followups.
