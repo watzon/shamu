@@ -37,7 +37,8 @@ Each phase in PLAN.md has Tracks A, B, C… labeled **Parallel** or **Serial**. 
 ### Spawn
 - Fire agents with `run_in_background: true` in a **single message** containing parallel tool calls — this is what makes the swarm a swarm.
 - Each agent is scoped to non-overlapping paths. Sibling tracks do not share files.
-- Agents never commit. Agents never git-push. Agents never run destructive git.
+- Agents never commit. Agents never git-push. Agents never run destructive git (`git reset`, `git checkout -- .`, `git clean -f`, `git stash drop`, `git branch -D`, force-push). **Parallel agents share the working tree** — an agent that "reverts unexpected changes to keep its hand-off clean" will destroy the sibling's uncommitted work. Every parallel-agent prompt MUST explicitly forbid destructive git and MUST explicitly tell the agent to leave files it didn't create alone.
+- Before landing parallel work: stage per-branch files selectively. If siblings touched `bun.lock`, separate via stash / branch-switch rather than accepting both in one branch.
 
 ### Review
 - When an agent returns, read its writeup/deliverable.
@@ -71,7 +72,11 @@ Every prompt includes:
 4. **Deliverables.** Concrete file list + per-file expectations + acceptance criteria.
 5. **Constraints (always include):**
    - Work only in `<assigned paths>`. Don't touch sibling packages, PLAN.md, or `docs/phase-*/`.
-   - Don't commit. Don't run destructive git. Leave work unstaged for parent review.
+   - Don't commit. Don't push. Don't run destructive git. Leave work unstaged for parent review.
+   - **NEVER run destructive git operations.** No `git checkout -- .`, no `git checkout <file>` against another agent's work, no `git reset --hard`, no `git clean -f`, no `git stash drop`, no `git branch -D`, no force-push. If the tree contains unstaged changes you didn't make (a parallel sibling track's in-flight work), LEAVE THEM ALONE — do not "clean up" the working tree. If you need to switch branches and your current branch has uncommitted changes, stop and flag it instead of forcing a checkout. A 2026-04-18 incident destroyed a parallel sibling agent's ~1000 lines of uncommitted work when one agent did a defensive `git reset`; the other agent had to be re-run from scratch. Assume any file you didn't create belongs to someone else.
+   - Don't run `bun install` unless a deliverable genuinely requires a new dep. A sibling track's concurrent `bun install` creates a lockfile race that another agent may then "revert" on branch switch — the resulting coordination bug masks real work loss.
+   - Don't `git checkout <branch>` mid-task. Stay on your assigned branch the entire time. If the branch isn't where you expect, stop and flag.
+   - Before handoff: run `git status` and explicitly verify every expected file is present. If something's missing (especially brand-new files), stop and report — don't assume it's a display quirk.
    - Run `bun run lint && bun run typecheck && bun run test && bun run agent-ci` before declaring done; all must exit 0.
    - Pin dependencies exactly (no `^`/`~`). Install with `bun install --frozen-lockfile --ignore-scripts`.
    - `verbatimModuleSyntax` is on — `import type` for type-only imports.
