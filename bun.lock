@@ -86,6 +86,15 @@
         "@shamu/shared": "workspace:*",
       },
     },
+    "packages/adapters/gemini": {
+      "name": "@shamu/adapter-gemini",
+      "version": "0.0.0",
+      "dependencies": {
+        "@shamu/adapters-base": "workspace:*",
+        "@shamu/protocol-acp": "workspace:*",
+        "@shamu/shared": "workspace:*",
+      },
+    },
     "packages/adapters/opencode": {
       "name": "@shamu/adapter-opencode",
       "version": "0.0.0",
@@ -403,6 +412,8 @@
     "@shamu/adapter-cursor": ["@shamu/adapter-cursor@workspace:packages/adapters/cursor"],
 
     "@shamu/adapter-echo": ["@shamu/adapter-echo@workspace:packages/adapters/echo"],
+
+    "@shamu/adapter-gemini": ["@shamu/adapter-gemini@workspace:packages/adapters/gemini"],
 
     "@shamu/adapter-opencode": ["@shamu/adapter-opencode@workspace:packages/adapters/opencode"],
 
