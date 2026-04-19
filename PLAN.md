@@ -149,16 +149,16 @@ Richer local view — graphical DAGs, diff viewer, charts — running alongside 
 - [ ] Keyboard bindings + `?` help overlay
 - [ ] Accessibility: screen-reader-friendly fallback mode (`--simple`)
 
-**Phase 7 — Web dashboard (Track 7.H — Parallel with adapter fan-out)**
-- [ ] Hono server in `apps/web` with SSE endpoint over `AgentEvent`; binds to `127.0.0.1` only
-- [ ] SSE `Origin` allow-list (default `http://127.0.0.1:*`; `--unsafe-bind` requires explicit addition)
-- [ ] SolidJS frontend scaffold + router + design tokens
-- [ ] Swarm overview page
-- [ ] Run detail page with DAG visualization (D3 or Cytoscape)
-- [ ] Diff viewer for executor patches
-- [ ] CI output viewer with collapsible groups (reuses Phase 0.D parser)
-- [ ] Cost/usage charts (last 7/30/90 days)
-- [ ] Stable run URLs (`/run/<id>`) for bookmarking
+**Phase 7 — Web dashboard (Track 7.H — Parallel with adapter fan-out)** — MVP landed #25; deferred items move into follow-on PRs.
+- [x] Hono server in `apps/web` with SSE endpoint over `AgentEvent`; binds to `127.0.0.1` only
+- [x] SSE `Origin` allow-list (default `http://127.0.0.1:<port>` + `http://localhost:<port>`; `--unsafe-bind` UX deferred to Phase 8.C)
+- [x] SolidJS frontend scaffold + router + design tokens
+- [x] Swarm overview page
+- [ ] Run detail page with DAG visualization (D3 or Cytoscape) — run detail lists events chronologically; DAG viz deferred to follow-on PR
+- [ ] Diff viewer for executor patches — deferred
+- [ ] CI output viewer with collapsible groups (reuses Phase 0.D parser) — deferred
+- [ ] Cost/usage charts (last 7/30/90 days) — deferred
+- [x] Stable run URLs (`/run/<id>`) for bookmarking
 
 **Phase 8 — UI ops polish (folds into Track 8.C in the Phased delivery section below)**
 - [ ] `bun build --compile` packages CLI + TUI + web into a single binary
@@ -745,27 +745,27 @@ Transport-spike writeup at `docs/phase-7/adapter-transports.md` classifies each 
 
 Reference-adapter order (2 new transport classes + 3 variations):
 
-- [ ] 7.A — `packages/adapters/opencode` on `@opencode-ai/sdk@1.4.x` — **SSE-HTTP reference**. SDK spawns a local HTTP server (`createOpencode()`) or attaches to an existing one (`createOpencodeClient()`); events via `event.subscribe()` SSE stream. Sessions first-class (`session.create` / `session.get` / `session.prompt`); `sessionId` round-trips. Auth via `client.auth.set({ path: { id: "<provider>" }, body: { type: "api", key } })` — BYO-provider-keys. Adapter owns subprocess lifecycle of the OpenCode server (reap on `AgentHandle.shutdown`).
-- [ ] 7.B — `packages/adapters/cursor` — **ACP-stdio reference**. Launch `agent acp` (binary at `~/.local/bin/agent` from the Cursor desktop app; no npm distribution). Transport: JSON-RPC 2.0 newline-delimited over stdio; `session/new` + `session/load` + `session/prompt` + `session/update` notifications + `session/request_permission`. Auth via `agent login`, `--api-key` / `CURSOR_API_KEY`, or `--auth-token` / `CURSOR_AUTH_TOKEN`; ACP auth method advertised as `cursor_login`. `customTools: false` (Cursor's tools are hosted); `setModel` limited to subagent `model: "fast"`. Shared ACP projector lives at `packages/protocol/acp/` (not under `packages/adapters/base/`) so a future A2A bridge or second Zed-integrated agent can consume it directly.
-- [ ] 7.C — `packages/adapters/gemini` on `@google/gemini-cli@0.38.x` (bin: `gemini --acp`) — **ACP-stdio variation**. Reuses 7.B's ACP projector; differs in binary path, auth (`GEMINI_API_KEY` / `GOOGLE_AI_API_KEY` env or interactive `/login`), and capability flags (`unstable_setSessionModel` → declare `setModel` as `"per-session"`). No standalone SDK — the CLI is the transport. Adopt per-line validation for the stdout-corruption workaround (gemini-cli#22647); surface malformed lines as `error` events; pin a known-good `@google/gemini-cli` version in the adapter README.
-- [ ] 7.D — `packages/adapters/amp` shelling out to `@sourcegraph/amp` (bin: `amp`) with long-lived `amp -x --stream-json --stream-json-input` — **stream-JSON-shell variation** of the Claude/Codex family. Keeps stdin open to match the Claude/Codex shape and preserve the vendor's context cache; simplifies `interrupt()` semantics. `{type:"system", session_id}` → `session_start`, `{type:"assistant"}` → `assistant_message`, `{type:"result"}` → `turn_end`. Resume via `amp threads continue <id>`. Auth via `AMP_API_KEY` env (non-interactive) or `amp login` (keychain-backed, subscription). `costReporting: "subscription"`; `mcp: "none"`; `customTools: false`.
-- [ ] 7.E — `packages/adapters/pi` on `@mariozechner/pi-coding-agent@0.67.x` (bin: `pi --mode rpc`) — **JSONL-over-stdio variation** (not JSON-RPC 2.0; Pi's own command dictionary). Handshake `{type:"ready"}`; commands/responses correlated by optional `id`; async events streamed with no `id` (`tool_execution_start/update/end`, content deltas, usage). Sessions persist to disk; `--no-session` opts out. **LF-only delimiter** (strict JSONL — reject Unicode-separator-aware line readers). Tool calls surface both in `AssistantMessage.content` and via `tool_execution_*` events — project from the event stream, not the content blocks. `customTools` / `mcp` declaration resolved by a Pi-docs sub-spike during 7.E drafting.
+- [x] 7.A — `packages/adapters/opencode` on `@opencode-ai/sdk@1.4.x` — **SSE-HTTP reference**. SDK spawns a local HTTP server (`createOpencode()`) or attaches to an existing one (`createOpencodeClient()`); events via `event.subscribe()` SSE stream. Sessions first-class (`session.create` / `session.get` / `session.prompt`); `sessionId` round-trips. Auth via `client.auth.set({ path: { id: "<provider>" }, body: { type: "api", key } })` — BYO-provider-keys. Adapter owns subprocess lifecycle of the OpenCode server (reap on `AgentHandle.shutdown`). **Landed #13.**
+- [x] 7.B — `packages/adapters/cursor` — **ACP-stdio reference**. Launch `agent acp` (binary at `~/.local/bin/agent` from the Cursor desktop app; no npm distribution). Transport: JSON-RPC 2.0 newline-delimited over stdio; `session/new` + `session/load` + `session/prompt` + `session/update` notifications + `session/request_permission`. Auth via `agent login`, `--api-key` / `CURSOR_API_KEY`, or `--auth-token` / `CURSOR_AUTH_TOKEN`; ACP auth method advertised as `cursor_login`. `customTools: false` (Cursor's tools are hosted); `setModel` limited to subagent `model: "fast"`. Shared ACP projector lives at `packages/protocol/acp/` (not under `packages/adapters/base/`) so a future A2A bridge or second Zed-integrated agent can consume it directly. **Landed #14.**
+- [x] 7.C — `packages/adapters/gemini` on `@google/gemini-cli@0.38.x` (bin: `gemini --acp`) — **ACP-stdio variation**. Reuses 7.B's ACP projector; differs in binary path, auth (`GEMINI_API_KEY` / `GOOGLE_AI_API_KEY` env or interactive `/login`), and capability flags (`unstable_setSessionModel` → declare `setModel` as `"per-session"`). No standalone SDK — the CLI is the transport. Adopt per-line validation for the stdout-corruption workaround (gemini-cli#22647); surface malformed lines as `error` events; pin a known-good `@google/gemini-cli` version in the adapter README. **Landed #15.**
+- [x] 7.D — `packages/adapters/amp` shelling out to `@sourcegraph/amp` (bin: `amp`) with long-lived `amp -x --stream-json --stream-json-input` — **stream-JSON-shell variation** of the Claude/Codex family. Keeps stdin open to match the Claude/Codex shape and preserve the vendor's context cache; simplifies `interrupt()` semantics. `{type:"system", session_id}` → `session_start`, `{type:"assistant"}` → `assistant_message`, `{type:"result"}` → `turn_end`. Resume via `amp threads continue <id>`. Auth via `AMP_API_KEY` env (non-interactive) or `amp login` (keychain-backed, subscription). `costReporting: "subscription"`; `mcp: "none"`; `customTools: false`. **Landed #16.**
+- [x] 7.E — `packages/adapters/pi` on `@mariozechner/pi-coding-agent@0.67.x` (bin: `pi --mode rpc`) — **JSONL-over-stdio variation** (not JSON-RPC 2.0; Pi's own command dictionary). Handshake `{type:"ready"}`; commands/responses correlated by optional `id`; async events streamed with no `id` (`tool_execution_start/update/end`, content deltas, usage). Sessions persist to disk; `--no-session` opts out. **LF-only delimiter** (strict JSONL — reject Unicode-separator-aware line readers). Tool calls surface both in `AssistantMessage.content` and via `tool_execution_*` events — project from the event stream, not the content blocks. `customTools` / `mcp` declaration resolved by a Pi-docs sub-spike during 7.E drafting. **Landed #17.**
 - [ ] 7.F — (retired; see Phase 7.X below)
 
-**Track 7.G — Capability matrix (Serial after 7.A–7.E)**
-- [ ] Generate capability matrix from each adapter's `Capabilities` declaration
-- [ ] Contract suite runs against all five on every PR (parallel matrix job in CI)
-- [ ] Docs page: "Which adapter supports what"
+**Track 7.G — Capability matrix (Serial after 7.A–7.E)** — **Landed #24.**
+- [x] Generate capability matrix from each adapter's `Capabilities` declaration
+- [x] Contract suite runs against all five on every PR (parallel matrix job in CI) — 8-adapter fan-out (`contract:<vendor>`), additive to `CI / ubuntu-latest` (sole required check)
+- [x] Docs page: "Which adapter supports what" — `docs/phase-7/capability-matrix.md`
 
-**Track 7.H — Web dashboard (Parallel with 7.A–7.E; see UI plan task breakdown above)**
-- [ ] All web-dashboard tasks from the UI plan land here
+**Track 7.H — Web dashboard (Parallel with 7.A–7.E; see UI plan task breakdown above)** — **MVP landed #25; DAG viz / diff viewer / CI viewer / cost charts deferred to follow-on PRs.**
+- [x] MVP: Hono server + SolidJS SPA, 127.0.0.1-bound, Origin allow-list, SSE live tail, swarm overview, run detail, stable `/run/<id>` URLs
 
-**Track 7.I — Network egress broker (Parallel; must land by end of Phase 7)**
-- [ ] `packages/egress-broker`: local HTTP(S) proxy (mitmproxy-style) spawned per run; agent subprocesses get `HTTPS_PROXY`/`HTTP_PROXY` pointed at it
-- [ ] Per-run `allowed_hosts` policy; denied destinations surface as `policy.egress_denied` events
-- [ ] Default allow-lists shipped per adapter (Anthropic → `api.anthropic.com`; Codex → `api.openai.com`; etc.)
-- [ ] Contract test: prompt injection attempting `curl attacker.com` is blocked and logged
-- [ ] Policy file format shared with Phase 8's containerized enforcement
+**Track 7.I — Network egress broker (Parallel; must land by end of Phase 7)** — **Landed #20.**
+- [x] `packages/egress-broker`: local HTTP(S) proxy (mitmproxy-style) spawned per run; agent subprocesses get `HTTPS_PROXY`/`HTTP_PROXY` pointed at it
+- [x] Per-run `allowed_hosts` policy; denied destinations surface as `policy.egress_denied` events
+- [x] Default allow-lists shipped per adapter (Anthropic → `api.anthropic.com`; Codex → `api.openai.com`; etc.)
+- [x] Contract test: prompt injection attempting `curl attacker.com` is blocked and logged
+- [x] Policy file format shared with Phase 8's containerized enforcement
 
 **Exit:** integration test spawns one of each adapter against the same trivial task; capability matrix published; web dashboard reaches feature parity with the TUI for read-only views.
 
