@@ -1,0 +1,25 @@
+{
+  "name": "@shamu/egress-broker-container",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Container-backed peer of @shamu/egress-broker. Runs the policy-enforcing proxy inside a per-run Docker container so the adapter subprocess cannot bypass it; same EgressPolicy format, same EgressBrokerHandle shape, opt-in via createContainerEgressBroker().",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/egress-broker": "workspace:*",
+    "@shamu/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.12",
+    "@types/node": "22.13.1",
+    "vitest": "4.1.4"
+  }
+}
