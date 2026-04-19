@@ -53,6 +53,26 @@ export type { Script, Step } from "./script.ts";
 export { chooseScript, PLANTED_SECRET_TOKEN, SCRIPTS } from "./script.ts";
 export { echoVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
+/**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint). The web dashboard's `/api/adapters/:vendor/models` endpoint
+ * materializes the same shape from whichever adapter is picked.
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Echo has no real models; it emits a scripted stream. Return a single
+ * placeholder so UI code can treat every adapter uniformly.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [{ id: "echo-default", label: "echo (scripted)", default: true }];
+}
+
 /** Load the capability manifest relative to this module's source layout. */
 function loadEchoCapabilities(): Readonly<Capabilities> {
   const here = dirname(fileURLToPath(import.meta.url));

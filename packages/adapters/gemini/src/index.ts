@@ -275,6 +275,29 @@ export function createGeminiAdapter(options: GeminiAdapterOptions = {}): GeminiA
 }
 
 /**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Gemini model catalog. Sourced from `@google/gemini-cli`'s supported
+ * model list (README). Default tracks the CLI's implicit default.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", default: true },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    { id: "gemini-2.0-pro", label: "Gemini 2.0 Pro" },
+  ];
+}
+
+/**
  * Merge `SpawnOpts.env` on top of `vendorOpts.env` with empty-string = delete
  * semantics. Returns `undefined` when neither side contributes a key. The
  * driver's own `defaultEnv` then layers the result on top of the

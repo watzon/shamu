@@ -23,10 +23,18 @@ import {
   onCleanup,
   Show,
 } from "solid-js";
-import { fetchRunDetail, type RunDetailPayload, runStreamUrl } from "../api.ts";
+import {
+  fetchRunDetail,
+  fetchRuns,
+  interruptRun,
+  type RunDetailPayload,
+  type RunSummary,
+  runStreamUrl,
+} from "../api.ts";
 import { formatTimestamp, truncate } from "../format.ts";
 
 type ConnectionState = "idle" | "connecting" | "open" | "error" | "closed";
+type InterruptState = "idle" | "requesting" | "cancelled" | "failed";
 
 export function RunDetail() {
   const params = useParams<{ id: string }>();
@@ -34,6 +42,13 @@ export function RunDetail() {
   const [liveEvents, setLiveEvents] = createSignal<readonly AgentEvent[]>([]);
   const [connection, setConnection] = createSignal<ConnectionState>("idle");
   const [connectError, setConnectError] = createSignal<string | null>(null);
+  const [interruptState, setInterruptState] = createSignal<InterruptState>("idle");
+  const [interruptError, setInterruptError] = createSignal<string | null>(null);
+  // Sibling-runs panel: re-read /api/runs on mount so a user who navigated
+  // via /new-run sees every other run that shares the same swarm/flow.
+  // The MVP keys off `swarmId` — future phases can key off a `flowRunId`
+  // when the engine surfaces that onto the run row.
+  const [siblings] = createResource<readonly RunSummary[]>(fetchRuns);
 
   const allEvents = createMemo(() => {
     const base = detail()?.events ?? [];
@@ -77,6 +92,46 @@ export function RunDetail() {
     });
   });
 
+  // Is the run cancellable?  Running runs are; terminal states are not.
+  const canInterrupt = createMemo(() => {
+    const status = detail()?.run.status;
+    return status === "running" || status === "pending" || status === "review";
+  });
+
+  const siblingList = createMemo<readonly RunSummary[]>(() => {
+    const current = detail()?.run;
+    const all = siblings() ?? [];
+    if (current === undefined) return [];
+    return all.filter((r) => {
+      if (r.runId === current.runId) return false;
+      // Group by swarm id when available; fall back to "none" so multiple
+      // runs without a swarm still show up together. When MVP writes land
+      // that carry a flow run id, filter on that instead.
+      if (current.swarmId !== null) return r.swarmId === current.swarmId;
+      return r.swarmId === null;
+    });
+  });
+
+  const onInterrupt = async () => {
+    const d = detail();
+    if (!d) return;
+    if (interruptState() === "requesting") return;
+    setInterruptState("requesting");
+    setInterruptError(null);
+    try {
+      const status = await interruptRun(d.run.runId);
+      if (status === "cancelled") {
+        setInterruptState("cancelled");
+      } else {
+        setInterruptState("failed");
+        setInterruptError("server did not acknowledge cancellation (run may already be complete)");
+      }
+    } catch (err) {
+      setInterruptState("failed");
+      setInterruptError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <section class="run-view">
       <header class="run-view__header">
@@ -98,12 +153,52 @@ export function RunDetail() {
           )}
         </Show>
         <ConnectionIndicator state={connection()} />
+        <Show when={detail() && canInterrupt() && interruptState() !== "cancelled"}>
+          <button
+            type="button"
+            class="btn btn--warning"
+            onClick={onInterrupt}
+            disabled={interruptState() === "requesting"}
+          >
+            {interruptState() === "requesting" ? "interrupting…" : "Interrupt"}
+          </button>
+        </Show>
       </header>
+      <Show when={interruptState() === "cancelled" ? detail() : null}>
+        {(d) => (
+          <p class="run-view__cancelled" role="status">
+            Cancelled —{" "}
+            <A href={`/new-run?resume=${encodeURIComponent(d().run.runId)}`}>Start resume</A>
+          </p>
+        )}
+      </Show>
+      <Show when={interruptError()}>
+        <p class="run-view__error">{interruptError()}</p>
+      </Show>
       <Show when={connectError()}>
         <p class="run-view__error">{connectError()}</p>
       </Show>
       <Show when={detail.error}>
         <p class="run-view__error">could not load run: {String(detail.error)}</p>
+      </Show>
+      <Show when={siblingList().length > 0}>
+        <aside class="run-view__siblings">
+          <h2>Sibling runs</h2>
+          <ul class="run-view__siblings-list">
+            <For each={siblingList()}>
+              {(r) => (
+                <li>
+                  <A href={`/run/${encodeURIComponent(r.runId)}`} class="runs-table__runid">
+                    {r.runId}
+                  </A>
+                  <span class={`status status--${r.status}`}>{r.status}</span>
+                  <span class="muted">role: {r.role ?? "—"}</span>
+                  <span class="muted">vendor: {r.vendor ?? "—"}</span>
+                </li>
+              )}
+            </For>
+          </ul>
+        </aside>
       </Show>
       <Show when={detail()}>
         <div class="events">

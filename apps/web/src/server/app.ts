@@ -7,27 +7,52 @@
  * with the env-derived config.
  *
  * Routes (all under `/api/*` except the SPA):
- *   - GET /api/health          → liveness probe
- *   - GET /api/runs            → list of RunRow
- *   - GET /api/runs/:id        → run detail + first page of events
- *   - GET /api/runs/:id/stream → SSE live-tail, honors Last-Event-ID
- *   - GET /                    → SolidJS SPA (static HTML)
- *   - GET /assets/*            → bundled JS/CSS
+ *   Read-only (PR #25):
+ *     - GET /api/health                      → liveness probe
+ *     - GET /api/runs                        → list of RunRow
+ *     - GET /api/runs/:id                    → run detail + first page of events
+ *     - GET /api/runs/:id/stream             → SSE live-tail, honors Last-Event-ID
+ *   Control surface (Phase 9.C):
+ *     - GET /api/csrf                        → mint a CSRF token + cookie
+ *     - GET /api/adapters/available          → which adapters resolve on this machine
+ *     - GET /api/adapters/:vendor/models     → per-adapter model catalog
+ *     - POST /api/runs                       → start a new run
+ *     - POST /api/runs/:id/interrupt         → cooperative cancel
+ *   SPA:
+ *     - GET /                                → SolidJS SPA (static HTML)
+ *     - GET /assets/*                        → bundled JS/CSS
  *
  * Origin allow-list is enforced as the first middleware. Requests with a
  * missing `Origin` header (curl, fetch on same origin via browser) pass; a
  * mismatched `Origin` returns 403. This is the cross-origin CSRF boundary
  * for the SSE endpoint.
+ *
+ * Mutating endpoints add a second layer: double-submit CSRF cookie +
+ * `X-CSRF-Token` header must match. See `csrf.ts`.
  */
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  resolveVendorCli,
+  type VendorCliResolverResult,
+  type VendorName,
+} from "@shamu/adapters-base/vendor-cli-resolver";
 import { eventsQueries, runsQueries, type ShamuDatabase } from "@shamu/persistence";
 import { runId as brandRunId } from "@shamu/shared/ids";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { z } from "zod";
+import { ADAPTER_MODULES, isKnownAdapter, knownAdapterNames } from "./adapters.ts";
 import type { ServerConfig } from "./config.ts";
+import { buildCsrfCookie, CSRF_COOKIE_NAME, mintCsrfToken, validateCsrf } from "./csrf.ts";
+import {
+  interruptRun as defaultInterruptRun,
+  startRun as defaultStartRun,
+  type StartRunInput,
+  type StartRunResult,
+} from "./runs-runner.ts";
 
 export interface AppDeps {
   readonly db: ShamuDatabase;
@@ -36,6 +61,24 @@ export interface AppDeps {
   readonly now?: () => number;
   /** Yield between polls. Injectable so tests can run deterministically. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Test seam: disable the per-run egress broker so unit tests don't have
+   * to bind loopback ports. Production leaves this unset (broker enabled).
+   */
+  readonly skipEgressBroker?: boolean;
+  /**
+   * Override the run starter. Tests inject a fake to avoid spawning
+   * real adapters; production leaves this unset and the default hits
+   * `runs-runner.startRun`.
+   */
+  readonly startRun?: (input: StartRunInput) => Promise<StartRunResult>;
+  /**
+   * Override the interrupt dispatcher. Same shape — tests stub this to
+   * assert the HTTP plumbing without a real handle.
+   */
+  readonly interruptRun?: (
+    runId: ReturnType<typeof brandRunId>,
+  ) => Promise<"cancelled" | "unknown">;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -47,6 +90,21 @@ function originCheck(origin: string | undefined, allowed: readonly string[]): bo
   if (origin === undefined || origin === "") return true;
   return allowed.includes(origin);
 }
+
+/** Zod schema for `POST /api/runs` body. */
+const startRunBodySchema = z
+  .object({
+    task: z.string().min(1).max(50_000),
+    adapter: z.string().min(1),
+    role: z.string().min(1).max(100),
+    flow: z.string().optional(),
+    model: z.string().optional(),
+    // EgressPolicy is loaded server-side; we accept a free-form object
+    // and let `loadEgressPolicy` validate inside the broker helper. Keep
+    // the outer schema permissive so the frontend can send it as JSON.
+    egressPolicy: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
 
 export function createApp(deps: AppDeps): Hono {
   const { db, config } = deps;
@@ -65,6 +123,13 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Health --------------------------------------------------------------
   app.get("/api/health", (c) => c.json({ ok: true, dbPath: config.dbPath }));
+
+  // --- CSRF token ----------------------------------------------------------
+  app.get("/api/csrf", (c) => {
+    const token = mintCsrfToken();
+    c.header("set-cookie", buildCsrfCookie(token));
+    return c.json({ token, cookie: CSRF_COOKIE_NAME });
+  });
 
   // --- Runs list -----------------------------------------------------------
   app.get("/api/runs", (c) => {
@@ -130,6 +195,157 @@ export function createApp(deps: AppDeps): Hono {
         await sleep(config.tailIntervalMs);
       }
     });
+  });
+
+  // --- Adapter availability ------------------------------------------------
+  app.get("/api/adapters/available", async (c) => {
+    const results: Array<{
+      readonly vendor: VendorName;
+      readonly ok: boolean;
+      readonly path?: string;
+      readonly source?: string;
+      readonly version?: string;
+      readonly error?: string;
+    }> = [];
+    for (const name of knownAdapterNames()) {
+      if (name === "echo") continue; // echo has no CLI; excluded per track spec.
+      try {
+        const descriptor = await ADAPTER_MODULES[name].descriptor();
+        const res: VendorCliResolverResult = await resolveVendorCli({
+          adapter: name,
+          descriptor,
+        });
+        const entry: {
+          vendor: VendorName;
+          ok: boolean;
+          path?: string;
+          source?: string;
+          version?: string;
+        } = {
+          vendor: name,
+          ok: true,
+          source: res.source,
+        };
+        if (res.path.length > 0) entry.path = res.path;
+        if (res.version !== undefined) entry.version = res.version;
+        results.push(entry);
+      } catch (err) {
+        results.push({
+          vendor: name,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return c.json({ adapters: results });
+  });
+
+  // --- Adapter models ------------------------------------------------------
+  app.get("/api/adapters/:vendor/models", async (c) => {
+    const vendor = c.req.param("vendor");
+    if (!isKnownAdapter(vendor)) return c.json({ error: "unknown_adapter", vendor }, 404);
+    try {
+      const models = await ADAPTER_MODULES[vendor].models();
+      return c.json({ models });
+    } catch (err) {
+      return c.json(
+        {
+          error: "models_unavailable",
+          vendor,
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        500,
+      );
+    }
+  });
+
+  // --- Start a run ---------------------------------------------------------
+  app.post("/api/runs", async (c) => {
+    const csrf = validateCsrf(c);
+    if (!csrf.ok) {
+      return c.json({ ok: false, error: "csrf_missing", reason: csrf.reason }, 403);
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ ok: false, error: "invalid_json" }, 400);
+    }
+    const parsed = startRunBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        {
+          ok: false,
+          error: "invalid_body",
+          issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        },
+        400,
+      );
+    }
+    const b = parsed.data;
+    if (!isKnownAdapter(b.adapter)) {
+      return c.json(
+        {
+          ok: false,
+          error: "unknown_adapter",
+          adapter: b.adapter,
+          known: knownAdapterNames(),
+        },
+        400,
+      );
+    }
+
+    const runInput: StartRunInput = {
+      task: b.task,
+      adapter: b.adapter,
+      role: b.role,
+      ...(b.flow !== undefined ? { flow: b.flow } : {}),
+      ...(b.model !== undefined ? { model: b.model } : {}),
+      // `egressPolicy` passthrough deferred — the frontend doesn't use it
+      // in this iteration and `policyFromAllowlist` is the safe default.
+    };
+    const result = deps.startRun
+      ? await deps.startRun(runInput)
+      : await defaultStartRun(runInput, {
+          db,
+          ...(deps.skipEgressBroker === true ? { skipEgressBroker: true } : {}),
+        });
+
+    if (result.ok) {
+      return c.json({ ok: true, runId: result.runId, url: result.url });
+    }
+    if (result.code === "vendor-cli-not-found") {
+      return c.json(
+        {
+          ok: false,
+          code: result.code,
+          adapter: result.adapter,
+          checked: result.checked,
+          message: result.message,
+        },
+        400,
+      );
+    }
+    return c.json({ ok: false, code: result.code, message: result.message }, 500);
+  });
+
+  // --- Interrupt a run -----------------------------------------------------
+  app.post("/api/runs/:id/interrupt", async (c) => {
+    const csrf = validateCsrf(c);
+    if (!csrf.ok) {
+      return c.json({ ok: false, error: "csrf_missing", reason: csrf.reason }, 403);
+    }
+    const id = c.req.param("id");
+    const brandedOrError = tryBrandRunId(id);
+    if (brandedOrError.ok === false) return c.json({ ok: false, error: "invalid_run_id" }, 400);
+    const status = deps.interruptRun
+      ? await deps.interruptRun(brandedOrError.value)
+      : await defaultInterruptRun(brandedOrError.value);
+    if (status === "unknown") {
+      return c.json({ ok: false, error: "run_not_active" }, 404);
+    }
+    return c.json({ ok: true, status });
   });
 
   // --- Static SPA ----------------------------------------------------------

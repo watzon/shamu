@@ -420,3 +420,31 @@ export class ClaudeAdapter implements AgentAdapter {
 export function createClaudeAdapter(options?: ClaudeAdapterOptions): ClaudeAdapter {
   return new ClaudeAdapter(options);
 }
+
+/**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint). The web dashboard's `/api/adapters/:vendor/models` endpoint
+ * materializes the same shape from whichever adapter is picked.
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Claude model catalog. Sourced from Anthropic's public model list and
+ * mirrored in `packages/adapters/claude/package.json#modelCatalogVersion`.
+ * The `default` entry matches the fallback in `makeHandle()` above.
+ *
+ * The Anthropic SDK does not export a programmatic list today — when one
+ * ships, swap this to consume the SDK's catalog.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "claude-opus-4-7", label: "Claude Opus 4.7", default: true },
+    { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  ];
+}

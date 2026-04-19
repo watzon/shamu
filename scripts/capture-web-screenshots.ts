@@ -156,15 +156,16 @@ export function routeToSlug(route: string): string {
 }
 
 /**
- * Compose the final route list. Always starts with `/`, then each seeded run's
- * detail route, in declaration order. Caller overrides win wholesale.
+ * Compose the final route list. Always starts with `/`, then `/new-run`
+ * (the Phase 9.C control surface), then each seeded run's detail route,
+ * in declaration order. Caller overrides win wholesale.
  */
 export function resolveRoutes(
   seeded: SeedResult,
   override: readonly string[] | null,
 ): readonly string[] {
   if (override !== null && override.length > 0) return override;
-  const base: string[] = ["/"];
+  const base: string[] = ["/", "/new-run"];
   for (const run of seeded.runs) {
     base.push(`/run/${encodeURIComponent(run.runId)}`);
   }

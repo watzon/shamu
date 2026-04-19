@@ -266,6 +266,34 @@ export function createOpencodeAdapter(options: OpencodeAdapterOptions = {}): Ope
 }
 
 /**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * OpenCode model catalog. OpenCode proxies multiple providers through one
+ * server, each with their own `providerId/modelId` pair. The list below
+ * is the subset exercised by PR #25's live smoke; operators can always
+ * set `--model` / `shamu.config.ts` to a provider model string
+ * (`anthropic/claude-sonnet-4-5`, `openai/gpt-5`, …).
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5 (OpenCode)", default: true },
+    { id: "anthropic/claude-opus-4-7", label: "Claude Opus 4.7 (OpenCode)" },
+    { id: "openai/gpt-5", label: "GPT-5 (OpenCode)" },
+    { id: "openai/gpt-5-codex", label: "GPT-5 Codex (OpenCode)" },
+    { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro (OpenCode)" },
+  ];
+}
+
+/**
  * Create a fresh OpenCode session on the server. Returns the vendor session
  * id (typed as a shamu `SessionId` brand for downstream consumers).
  */

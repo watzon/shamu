@@ -336,6 +336,31 @@ export function createPiAdapter(options: PiAdapterOptions = {}): PiAdapter {
 }
 
 /**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Pi model catalog. Pi proxies multiple providers via the same JSONL-stdio
+ * transport; ids below mirror the per-provider selector strings documented
+ * in Pi's README. The default tracks Pi's own default routing.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "auto", label: "Pi (auto)", default: true },
+    { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5 (Pi)" },
+    { id: "openai/gpt-5", label: "GPT-5 (Pi)" },
+    { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro (Pi)" },
+  ];
+}
+
+/**
  * Merge `SpawnOpts.env` on top of `vendorOpts.env` with empty-string = delete
  * semantics. Returns `undefined` when neither side contributes. The driver's
  * `defaultEnv` then layers the result on top of the PATH/HOME/XDG_* +

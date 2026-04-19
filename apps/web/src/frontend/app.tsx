@@ -20,10 +20,11 @@ export const App: ParentComponent = (props) => {
           <A href="/" end>
             runs
           </A>
+          <A href="/new-run">new run</A>
         </nav>
       </header>
       <main class="shell__main">{props.children}</main>
-      <footer class="shell__footer">127.0.0.1 only — local read-only view</footer>
+      <footer class="shell__footer">127.0.0.1 only — local control surface</footer>
     </div>
   );
 };
