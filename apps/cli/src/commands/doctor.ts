@@ -12,6 +12,11 @@ import { defineCommand } from "citty";
 import { loadConfig } from "../config.ts";
 import { ExitCode, type ExitCodeValue } from "../exit-codes.ts";
 import { ansiEnabled, writeHuman, writeJson } from "../output.ts";
+import { auditChainCheck } from "../services/doctor-audit-chain.ts";
+import { clockSkewCheck } from "../services/doctor-clock.ts";
+import { egressBrokerCheck } from "../services/doctor-egress.ts";
+import { tunnelScopeCheck } from "../services/doctor-tunnel-scope.ts";
+import { webhookServerCheck } from "../services/doctor-webhook.ts";
 import { commonArgs, done, outputMode } from "./_shared.ts";
 
 interface CheckResult {
@@ -46,27 +51,15 @@ export const doctorCommand = defineCommand({
     checks.push(await checkConfig(args.config));
     checks.push(checkKeychain());
 
-    // Phase-gated stubs — reported as `todo` so the shape is stable and users
-    // can see what will light up when.
-    checks.push({
-      name: "audit_events chain",
-      ok: true,
-      status: "todo",
-      detail: "HMAC-chained audit_events verification ships in Phase 1.B (persistence track).",
-    });
-    checks.push({
-      name: "webhook receiver",
-      ok: true,
-      status: "todo",
-      detail: "Webhook receiver reachability check ships in Phase 6.",
-    });
-    checks.push({
-      name: "tunnel scope",
-      ok: true,
-      status: "todo",
-      detail:
-        "cloudflared tunnel scope verification (dashboard port never exposed, G10) ships in Phase 6.",
-    });
+    // Phase-8.C real checks (audit chain, egress broker, clock, webhook,
+    // tunnel scope). Each helper is isolated so a crash in one doesn't take
+    // the whole doctor down — the `await` wraps lift into `CheckResult`s
+    // even on reject paths.
+    checks.push(await wrap("audit_events chain", auditChainCheck()));
+    checks.push(await wrap("egress broker", egressBrokerCheck()));
+    checks.push(await wrap("clock skew", clockSkewCheck()));
+    checks.push(await wrap("webhook server", webhookServerCheck()));
+    checks.push(wrapSync("tunnel scope", tunnelScopeCheck()));
 
     const anyFail = checks.some((c) => c.status === "fail");
 
@@ -267,6 +260,32 @@ function checkKeychain(): CheckResult {
     status: "fail",
     detail: `unsupported platform: ${process.platform}`,
   };
+}
+
+/**
+ * Attach a `name` to an async helper's `{status, ok, detail}` result. Catches
+ * throws so a helper crash becomes a `fail` check rather than a doctor-level
+ * unhandled rejection.
+ */
+async function wrap(
+  name: string,
+  promise: Promise<{ status: "pass" | "fail" | "todo"; ok: boolean; detail: string }>,
+): Promise<CheckResult> {
+  try {
+    const r = await promise;
+    return { name, ok: r.ok, status: r.status, detail: r.detail };
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return { name, ok: false, status: "fail", detail: `check crashed: ${message}` };
+  }
+}
+
+/** Sync variant of `wrap` for helpers that don't return a Promise. */
+function wrapSync(
+  name: string,
+  result: { status: "pass" | "fail" | "todo"; ok: boolean; detail: string },
+): CheckResult {
+  return { name, ok: result.ok, status: result.status, detail: result.detail };
 }
 
 function parseSemver(input: string): readonly [number, number, number] {
