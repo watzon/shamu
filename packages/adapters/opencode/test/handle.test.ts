@@ -187,6 +187,28 @@ describe("OpencodeHandle — event mapping", () => {
 
     await handle.send({ text: "hello" });
 
+    // Real server announces the assistant message before streaming parts.
+    // The projector uses this to distinguish assistant text from echoed
+    // user-prompt text.
+    harness.pushEvent({
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg-1",
+          sessionID: sid,
+          role: "assistant",
+          time: { created: 0 },
+          parentID: "msg-0",
+          providerID: "opencode",
+          modelID: "claude-haiku-4-5",
+          mode: "build",
+          path: { cwd: "/tmp", root: "/tmp" },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
+      },
+    } as OpencodeEvent);
+
     harness.pushEvent({
       type: "message.part.updated",
       properties: {

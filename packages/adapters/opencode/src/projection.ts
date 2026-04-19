@@ -74,6 +74,33 @@ export interface ProjectionState {
   readonly textPartCumulative: Map<string, string>;
   /** Tracks the shamu-bound sessionId (vendor `sessionID` round-tripped). */
   boundSessionId: SessionId | null;
+  /**
+   * Message ids for messages with `role: "user"`. OpenCode's SSE stream
+   * emits `message.part.updated` events for the user's prompt text parts
+   * too, not just the assistant's streamed output. Without this filter the
+   * projector would re-emit the user's prompt as `assistant_delta` — a
+   * confidentiality-boundary violation for anyone who redacts the assistant
+   * stream expecting it to be model output only. Populated from
+   * `message.updated` when `role === "user"`.
+   */
+  readonly userMessageIds: Set<string>;
+  /**
+   * Message ids confirmed to belong to the assistant. We require the role
+   * to be explicitly observed via `message.updated` before emitting any
+   * text/reasoning part — otherwise an out-of-order part-update whose
+   * containing message hasn't been announced yet could leak the user's
+   * prompt as `assistant_delta`. Parts that arrive before the role is
+   * known are buffered in `pendingParts` until `message.updated` confirms
+   * the role; tool/patch parts are excluded from this gate because they
+   * never carry prompt text and OpenCode dispatches them from the server.
+   */
+  readonly assistantMessageIds: Set<string>;
+  /**
+   * Buffered text/reasoning parts whose containing `messageID` has not
+   * yet been classified. Drained when `message.updated` lands with a
+   * role. Keyed by messageID; values preserve arrival order.
+   */
+  readonly pendingParts: Map<string, Array<{ part: Part; delta: string | undefined }>>;
 }
 
 export function createProjectionState(): ProjectionState {
@@ -88,6 +115,9 @@ export function createProjectionState(): ProjectionState {
     toolResultsEmitted: new Set(),
     textPartCumulative: new Map(),
     boundSessionId: null,
+    userMessageIds: new Set(),
+    assistantMessageIds: new Set(),
+    pendingParts: new Map(),
   };
 }
 
@@ -163,16 +193,53 @@ export function projectOpencodeEvent(ev: OpencodeEvent, ctx: ProjectionContext):
     case "message.updated": {
       const info = ev.properties.info;
       if (!matchesSession(info.sessionID, ctx)) return out;
+      if (info.role === "user") {
+        // Remember this id so subsequent `message.part.updated` events
+        // whose parts belong to the user's own prompt message aren't
+        // re-emitted as `assistant_delta` / `assistant_message`. Drop any
+        // buffered parts for this message — they belong to the user.
+        ctx.state.userMessageIds.add(info.id);
+        ctx.state.pendingParts.delete(info.id);
+        return out;
+      }
       if (info.role !== "assistant") return out;
+      ctx.state.assistantMessageIds.add(info.id);
       ctx.state.lastAssistant = info;
       if (info.finish) {
         ctx.state.assistantFinish = info.finish;
+      }
+      // Drain any text/reasoning parts that arrived before this
+      // message.updated confirmed the assistant role.
+      const pending = ctx.state.pendingParts.get(info.id);
+      if (pending) {
+        ctx.state.pendingParts.delete(info.id);
+        for (const entry of pending) {
+          out.push(...projectPart(entry.part, entry.delta, ctx));
+        }
       }
       return out;
     }
     case "message.part.updated": {
       const part = ev.properties.part;
       if (!matchesSession(part.sessionID, ctx)) return out;
+      if (ctx.state.userMessageIds.has(part.messageID)) {
+        // User-prompt parts echo back on the SSE stream; drop them — they
+        // already round-tripped through `handle.send()`.
+        return out;
+      }
+      // Text + reasoning parts are privileged (they shape the assistant
+      // stream) — require an explicit assistant `message.updated` before
+      // projecting. Buffer parts that arrive before the role is known.
+      // Tool/patch/file/step/snapshot/agent/retry/compaction/subtask parts
+      // are server-dispatched and safe to project immediately; OpenCode
+      // never routes prompt text through them.
+      const privileged = part.type === "text" || part.type === "reasoning";
+      if (privileged && !ctx.state.assistantMessageIds.has(part.messageID)) {
+        const buf = ctx.state.pendingParts.get(part.messageID) ?? [];
+        buf.push({ part, delta: ev.properties.delta });
+        ctx.state.pendingParts.set(part.messageID, buf);
+        return out;
+      }
       return projectPart(part, ev.properties.delta, ctx);
     }
     case "permission.updated": {

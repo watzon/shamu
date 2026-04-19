@@ -13,6 +13,12 @@
  *                                 `completed` or `failed`
  * - `plan`                     → `reasoning` (Cursor's plan-mode text)
  * - `current_mode_update`      — ignored (mode change; shamu owns modes)
+ * - `available_commands_update`— ignored (Cursor declares its slash-command
+ *                                 surface at session start; shamu doesn't
+ *                                 expose slash-commands at the harness layer)
+ * - `session_info_update`      — ignored (Cursor's per-session metadata:
+ *                                 model/persona/workspace info; shamu already
+ *                                 has this context via its own config)
  *
  * Terminal signals:
  *
@@ -103,7 +109,13 @@ export function projectCursorEvent(ev: AcpSessionUpdate, ctx: ProjectionContext)
   switch (kind) {
     case "user_message_chunk":
     case "current_mode_update":
-      // Not projected — user input echo / adapter-owned mode state.
+    case "available_commands_update":
+    case "session_info_update":
+      // Not projected — user-input echo, adapter-owned mode state, Cursor's
+      // slash-command advertisement, or Cursor's session metadata. None of
+      // these map to an `AgentEvent` shamu exposes today; surfacing them as
+      // `unknown_update_kind` errors produced noise on every session start
+      // (observed during 9.B.3 live smoke, 2026-04-19).
       return out;
 
     case "agent_message_chunk": {

@@ -224,6 +224,53 @@ describe("CursorHandle — event mapping", () => {
     await handle.shutdown("t");
   });
 
+  it("silently ignores Cursor-specific informational kinds (available_commands_update, session_info_update)", async () => {
+    // Regression guard for the 9.B.3 smoke. Cursor emits these two kinds on
+    // every session start (command catalog + session metadata). Before the
+    // fix they surfaced as `unknown_update_kind` errors and polluted every
+    // run's event stream.
+    const harness = makeFakeDriver();
+    const adapter = createCursorAdapter({ driverFactory: async () => harness.driver });
+    const handle = await adapter.spawn({
+      runId: newRunId(),
+      cwd: ROOT_DIR,
+    });
+    const sid = harness.sessionId();
+    harness.pushSessionUpdate({
+      sessionId: sid,
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [{ name: "/help", description: "Show help" }],
+      },
+    } as AcpSessionUpdate);
+    harness.pushSessionUpdate({
+      sessionId: sid,
+      update: {
+        sessionUpdate: "session_info_update",
+        model: "cursor-default",
+      },
+    } as AcpSessionUpdate);
+    // Also land one projected event so we can prove the stream is alive and
+    // the ignored kinds don't interfere with downstream projection.
+    harness.pushSessionUpdate({
+      sessionId: sid,
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+    } as AcpSessionUpdate);
+    const collected: AgentEvent[] = [];
+    const timer = new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const drainer = (async () => {
+      for await (const ev of handle.events) {
+        collected.push(ev);
+        if (ev.kind === "assistant_delta") return;
+      }
+    })();
+    await Promise.race([drainer, timer]);
+    const errors = collected.filter((e) => e.kind === "error");
+    expect(errors).toEqual([]);
+    expect(collected.some((e) => e.kind === "assistant_delta")).toBe(true);
+    await handle.shutdown("t");
+  });
+
   it("unknown sessionUpdate kinds surface as non-fatal error", async () => {
     const harness = makeFakeDriver();
     const adapter = createCursorAdapter({ driverFactory: async () => harness.driver });

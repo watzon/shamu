@@ -114,8 +114,9 @@ export interface OpencodeDriverOptions {
    */
   readonly hostname?: string;
   /**
-   * Owned-server port. `0` means "OS-assigned". Default inherits SDK
-   * default (`0`).
+   * Owned-server port. `0` means "OS-assigned". Default is `0` — we
+   * override the SDK's own default of 4096 (the OpenCode TUI port) so
+   * parallel spawns don't collide.
    */
   readonly port?: number;
   /** Spawn timeout passed to `createOpencode`. */
@@ -150,9 +151,15 @@ export async function createRealOpencodeDriver(
     };
   }
   try {
+    // Default the port to `0` (OS-assigned). The SDK's own default is the
+    // fixed OpenCode TUI port (4096), which collides if a second spawn
+    // (another `shamu run`, a sibling test in the same vitest worker, or
+    // the user's desktop TUI) already holds it. Orchestrators that need
+    // deterministic binding can still pass an explicit `port`.
+    const port = opts.port ?? 0;
     const { client, server } = await sdk.createOpencode({
       ...(opts.hostname !== undefined ? { hostname: opts.hostname } : {}),
-      ...(opts.port !== undefined ? { port: opts.port } : {}),
+      port,
       ...(opts.spawnTimeoutMs !== undefined ? { timeout: opts.spawnTimeoutMs } : {}),
     });
     let closed = false;
