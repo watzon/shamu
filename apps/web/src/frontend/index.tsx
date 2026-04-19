@@ -8,6 +8,7 @@
 import { Route, Router } from "@solidjs/router";
 import { render } from "solid-js/web";
 import { App } from "./app.tsx";
+import { NewRun } from "./routes/new-run.tsx";
 import { RunDetail } from "./routes/run-detail.tsx";
 import { SwarmOverview } from "./routes/swarm-overview.tsx";
 
@@ -20,6 +21,7 @@ render(
   () => (
     <Router root={App}>
       <Route path="/" component={SwarmOverview} />
+      <Route path="/new-run" component={NewRun} />
       <Route path="/run/:id" component={RunDetail} />
     </Router>
   ),

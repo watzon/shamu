@@ -239,6 +239,31 @@ function defaultCodexFactory(sdkOpts: CodexOptions): CodexLike {
 }
 
 /**
+ * Structural shape every adapter's `listModels()` returns. Kept inline so
+ * `@shamu/adapters-base` does not need a schema change (9.C narrow-edit
+ * constraint).
+ */
+export interface ModelInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+}
+
+/**
+ * Codex model catalog. Sourced from the `@openai/codex-sdk` README and the
+ * current Codex CLI. The default matches Codex CLI's default model when no
+ * `--model` flag is supplied.
+ */
+export function listModels(): readonly ModelInfo[] {
+  return [
+    { id: "gpt-5-codex", label: "GPT-5 Codex", default: true },
+    { id: "gpt-5", label: "GPT-5" },
+    { id: "gpt-4.1", label: "GPT-4.1" },
+    { id: "o3", label: "OpenAI o3" },
+  ];
+}
+
+/**
  * Materialize `process.env` (filtered to defined string values) and merge
  * the caller's overrides on top. Empty-string overrides delete the key —
  * standard env-merge semantics. Used for the Codex SDK whose `env` option,
