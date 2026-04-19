@@ -6,6 +6,7 @@
   "description": "Pi AgentAdapter for Shamu. JSONL-over-stdio variation (Phase 7.E) — spawns `pi --mode rpc` and speaks Pi's custom JSONL command/response/event dictionary (not JSON-RPC 2.0). Strict LF-only delimiter. Projects Pi's `tool_execution_*` + `message_update` + `turn_end` events into Shamu's AgentEvent stream. Pi is installed via `npm install -g @mariozechner/pi-coding-agent` — adapter resolves the `pi` binary at spawn and does NOT take it as a runtime dependency.",
   "exports": {
     ".": "./src/index.ts",
+    "./vendor-cli-descriptor": "./src/vendor-cli-descriptor.ts",
     "./capabilities.json": "./src/capabilities.json"
   },
   "scripts": {

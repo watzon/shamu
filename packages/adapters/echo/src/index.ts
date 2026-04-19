@@ -51,6 +51,7 @@ import { chooseScript, type Script, type Step } from "./script.ts";
 
 export type { Script, Step } from "./script.ts";
 export { chooseScript, PLANTED_SECRET_TOKEN, SCRIPTS } from "./script.ts";
+export { echoVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 /** Load the capability manifest relative to this module's source layout. */
 function loadEchoCapabilities(): Readonly<Capabilities> {

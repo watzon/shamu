@@ -16,23 +16,39 @@
  *      produced a session.
  *   4. Pick the adapter: defaults to `session.vendor`; `--adapter` override
  *      must match or we reject.
- *   5. Mint a fresh runId, insert a new `runs` row.
- *   6. `adapter.resume(session.sessionId, { runId: newRunId, ... })`.
- *   7. Drive one user turn with `--task`.
- *   8. Stream events through the shared driver (same cost-stamping +
+ *   5. Resolve the vendor CLI via the shared `resolveVendorCli` chain
+ *      (Phase 9.A) — uniform flags, env, config, per-adapter candidates.
+ *   6. Mint a fresh runId, insert a new `runs` row.
+ *   7. `adapter.resume(session.sessionId, { runId: newRunId, model?, ... })`.
+ *   8. Drive one user turn with `--task`.
+ *   9. Stream events through the shared driver (same cost-stamping +
  *      session-persisting logic as `shamu run`).
- *   9. Emit a `run-cost` summary.
+ *  10. Emit a `run-cost` summary.
  */
 
+import type { SpawnOpts } from "@shamu/adapters-base";
+import {
+  resolveVendorCli,
+  type VendorCliResolverResult,
+} from "@shamu/adapters-base/vendor-cli-resolver";
 import { runsQueries, type ShamuDatabase, sessionsQueries } from "@shamu/persistence";
 import { runId as brandRunId, newRunId } from "@shamu/shared";
 import { defineCommand } from "citty";
+import { type AdapterConfigEntry, loadConfig } from "../config.ts";
 import { ExitCode, type ExitCodeValue } from "../exit-codes.ts";
 import { writeDiag, writeHuman, writeJson } from "../output.ts";
-import { isKnownAdapter, knownAdapterNames, loadAdapter } from "../services/adapters.ts";
+import {
+  type AdapterName,
+  adapterHasVendorCli,
+  isKnownAdapter,
+  knownAdapterNames,
+  loadAdapter,
+} from "../services/adapters.ts";
+import { buildClaudeLastChance } from "../services/claude-sidecar-bootstrap.ts";
 import { emitRunCostSummary } from "../services/run-cost.ts";
 import { openRunDatabase } from "../services/run-db.ts";
 import { streamHandle } from "../services/run-driver.ts";
+import { getVendorCliDescriptor } from "../services/vendor-cli-registry.ts";
 import { commonArgs, done, outputMode, withServices } from "./_shared.ts";
 
 export const resumeCommand = defineCommand({
@@ -56,11 +72,23 @@ export const resumeCommand = defineCommand({
       type: "string",
       description: `Override the adapter. Must match the session's vendor (known: ${knownAdapterNames().join(", ")}).`,
     },
+    model: {
+      type: "string",
+      description:
+        "Model name passed via SpawnOpts.model. Beats shamu.config.ts adapters.<vendor>.defaultModel.",
+    },
     "state-dir": {
       type: "string",
       description:
         "Directory for the SQLite state file (overrides $SHAMU_STATE_DIR; default .shamu/state).",
     },
+    "claude-cli": { type: "string", description: "Path to the Claude CLI binary." },
+    "codex-cli": { type: "string", description: "Path to the Codex CLI binary." },
+    "cursor-cli": { type: "string", description: "Path to the Cursor agent binary." },
+    "gemini-cli": { type: "string", description: "Path to the Gemini CLI binary." },
+    "amp-cli": { type: "string", description: "Path to the Amp CLI binary." },
+    "opencode-cli": { type: "string", description: "Path to the OpenCode binary." },
+    "pi-cli": { type: "string", description: "Path to the Pi CLI binary." },
   },
   async run({ args }): Promise<ExitCodeValue> {
     const mode = outputMode(args);
@@ -138,6 +166,43 @@ export const resumeCommand = defineCommand({
         return done(ExitCode.INTERNAL);
       }
 
+      const vendorCliArgs: Partial<Record<AdapterName, string>> = {
+        claude: args["claude-cli"],
+        codex: args["codex-cli"],
+        cursor: args["cursor-cli"],
+        gemini: args["gemini-cli"],
+        amp: args["amp-cli"],
+        opencode: args["opencode-cli"],
+        pi: args["pi-cli"],
+      };
+
+      const configParams: Parameters<typeof loadConfig>[0] = {};
+      if (args.config !== undefined) configParams.explicitPath = args.config;
+      const configResult = await loadConfig(configParams);
+      if (!configResult.ok) {
+        writeDiag(`resume: config error: ${configResult.error.message}`);
+        return done(ExitCode.USAGE);
+      }
+      const adapterConfig = configResult.value.adapters[resolvedAdapterName];
+
+      const resolvedModel =
+        typeof args.model === "string" && args.model.length > 0
+          ? args.model
+          : adapterConfig?.defaultModel;
+
+      let cliResolution: VendorCliResolverResult;
+      try {
+        cliResolution = await resolveVendorCliForResume({
+          adapter: resolvedAdapterName,
+          explicit: vendorCliArgs[resolvedAdapterName],
+          configEntry: adapterConfig,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        writeDiag(`resume: ${message}`);
+        return done(ExitCode.USAGE);
+      }
+
       // Fresh runId per G8: the resumed run is a new run as far as the
       // orchestrator is concerned, even though it shares a vendor session
       // with the original. The sessions table links the two.
@@ -151,10 +216,15 @@ export const resumeCommand = defineCommand({
         status: "running",
       });
 
-      const handle = await adapter.resume(session.sessionId, {
+      const resumeOpts: SpawnOpts = {
         cwd: process.cwd(),
         runId: resumedRunId,
-      });
+        ...(cliResolution.path.length > 0 ? { vendorCliPath: cliResolution.path } : {}),
+        ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+        ...(adapterConfig?.envOverrides !== undefined ? { env: adapterConfig.envOverrides } : {}),
+      };
+
+      const handle = await adapter.resume(session.sessionId, resumeOpts);
       if (handle.runId !== resumedRunId) {
         writeDiag(
           `resume: adapter ${resolvedAdapterName} returned handle.runId=${handle.runId} ` +
@@ -171,6 +241,12 @@ export const resumeCommand = defineCommand({
         adapter: resolvedAdapterName,
         role,
         sessionId: session.sessionId,
+        ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+        cli: {
+          source: cliResolution.source,
+          ...(cliResolution.path.length > 0 ? { path: cliResolution.path } : {}),
+          ...(cliResolution.version !== undefined ? { version: cliResolution.version } : {}),
+        },
       });
       writeHuman(
         mode,
@@ -219,3 +295,56 @@ export const resumeCommand = defineCommand({
     }
   },
 });
+
+async function resolveVendorCliForResume(params: {
+  readonly adapter: AdapterName;
+  readonly explicit: string | undefined;
+  readonly configEntry: AdapterConfigEntry | undefined;
+}): Promise<VendorCliResolverResult> {
+  const descriptor = getVendorCliDescriptor(params.adapter);
+  const configEntry = narrowConfigEntry(params.configEntry);
+  if (!adapterHasVendorCli(params.adapter)) {
+    return resolveVendorCli({
+      adapter: params.adapter,
+      descriptor,
+      ...(params.explicit !== undefined ? { explicit: params.explicit } : {}),
+      ...(configEntry !== undefined ? { configEntry } : {}),
+    });
+  }
+  let lastChance: (() => Promise<string | null>) | undefined;
+  if (params.adapter === "claude") {
+    const { ensureClaudeSidecar } = await import("@shamu/adapter-claude");
+    lastChance = buildClaudeLastChance({
+      ensureSidecar: ensureClaudeSidecar,
+      onSidecarError: (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        writeDiag(
+          `resume: claude sidecar bootstrap failed; falling through to resolver error: ${message}`,
+        );
+      },
+    });
+  }
+  return resolveVendorCli({
+    adapter: params.adapter,
+    descriptor,
+    ...(params.explicit !== undefined ? { explicit: params.explicit } : {}),
+    ...(configEntry !== undefined ? { configEntry } : {}),
+    ...(lastChance !== undefined ? { lastChance } : {}),
+  });
+}
+
+/**
+ * Convert the AdapterConfigEntry (optional-or-undefined fields) into the
+ * resolver's narrow shape under `exactOptionalPropertyTypes`.
+ */
+function narrowConfigEntry(
+  entry: AdapterConfigEntry | undefined,
+): { cliPath?: string; cliVersionConstraint?: string } | undefined {
+  if (entry === undefined) return undefined;
+  const out: { cliPath?: string; cliVersionConstraint?: string } = {};
+  if (entry.cliPath !== undefined) out.cliPath = entry.cliPath;
+  if (entry.cliVersionConstraint !== undefined) {
+    out.cliVersionConstraint = entry.cliVersionConstraint;
+  }
+  return out;
+}

@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./script": "./src/script.ts",
+    "./vendor-cli-descriptor": "./src/vendor-cli-descriptor.ts",
     "./capabilities.json": "./src/capabilities.json"
   },
   "scripts": {

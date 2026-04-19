@@ -6,6 +6,7 @@
   "description": "OpenCode AgentAdapter for Shamu. Wraps @opencode-ai/sdk; SSE-HTTP transport (the reference adapter for the SSE-HTTP transport class). Owns the spawned OpenCode server subprocess via createOpencode(), or attaches to an existing server via createOpencodeClient(). Normalizes SSE events into the shared AgentEvent schema; enforces path-scope + shell-gate at tool dispatch.",
   "exports": {
     ".": "./src/index.ts",
+    "./vendor-cli-descriptor": "./src/vendor-cli-descriptor.ts",
     "./capabilities.json": "./src/capabilities.json"
   },
   "scripts": {

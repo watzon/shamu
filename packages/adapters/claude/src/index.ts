@@ -69,6 +69,7 @@ export {
   SIDECAR_VERSION,
   type SidecarPlatform,
 } from "./sidecar-pins.ts";
+export { claudeVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 function loadClaudeCapabilities(): Readonly<Capabilities> {
   const here = dirname(fileURLToPath(import.meta.url));

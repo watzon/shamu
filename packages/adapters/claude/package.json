@@ -6,6 +6,7 @@
   "description": "Production AgentAdapter wrapping @anthropic-ai/claude-agent-sdk. Phase 0.A verified ClaudeSDKClient does not exist in 0.2.113; this adapter uses `query()` for one-shot runs and `unstable_v2_createSession` / `unstable_v2_prompt` for warm resume.",
   "exports": {
     ".": "./src/index.ts",
+    "./vendor-cli-descriptor": "./src/vendor-cli-descriptor.ts",
     "./capabilities.json": "./src/capabilities.json"
   },
   "scripts": {

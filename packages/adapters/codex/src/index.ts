@@ -58,6 +58,7 @@ export {
   checkFileChange,
   decidePermission,
 } from "./permission-handler.ts";
+export { codexVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 /** Default vendor label. Tests may override via `CodexAdapterOptions.vendor`. */
 const DEFAULT_VENDOR = "codex";

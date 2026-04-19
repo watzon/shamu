@@ -19,6 +19,7 @@
     "./cost-stamping": "./src/cost-stamping.ts",
     "./errors": "./src/errors.ts",
     "./harness": "./src/harness.ts",
+    "./vendor-cli-resolver": "./src/vendor-cli-resolver.ts",
     "./contract": "./src/contract/index.ts",
     "./contract-tests": "./src/contract-tests/index.ts"
   },

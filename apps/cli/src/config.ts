@@ -14,7 +14,46 @@
 
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { VENDOR_NAMES } from "@shamu/adapters-base/vendor-cli-resolver";
 import { z } from "zod";
+
+/**
+ * Per-adapter user overrides. Read by the Phase 9.A vendor-CLI resolver
+ * and by `shamu run --adapter <name>` when wiring `SpawnOpts.model`.
+ *
+ * - `cliPath` — absolute path to a pre-authenticated vendor binary.
+ *   Precedence: `--<vendor>-cli` flag wins > `<VENDOR>_CLI_PATH` env wins
+ *   > this field wins > built-in candidate list wins > PATH fallback.
+ * - `cliVersionConstraint` — semver range the resolved binary must
+ *   satisfy. The resolver runs the adapter's `versionProbe` and throws
+ *   `VendorCliVersionMismatchError` on a miss.
+ * - `envOverrides` — extra env merged into `SpawnOpts.env` for this
+ *   adapter. Empty-string values delete the key. Intended for pinning a
+ *   provider API key in the config vs. export-ing it globally.
+ * - `defaultModel` — default model passed via `SpawnOpts.model` when the
+ *   user did NOT supply `--model`. CLI flag wins over this.
+ */
+export const adapterConfigEntrySchema = z
+  .object({
+    cliPath: z.string().optional(),
+    cliVersionConstraint: z.string().optional(),
+    envOverrides: z.record(z.string(), z.string()).optional(),
+    defaultModel: z.string().optional(),
+  })
+  .strict();
+
+export type AdapterConfigEntry = z.infer<typeof adapterConfigEntrySchema>;
+
+/**
+ * Adapter-name enum derived at runtime from the shared `VENDOR_NAMES`
+ * tuple. Keeping the source of truth in `@shamu/adapters-base` avoids
+ * double-updating whenever a new adapter ships.
+ *
+ * Zod v4's `enum` helper accepts a readonly tuple as the first element;
+ * we cast away the readonly to satisfy the type signature while keeping
+ * the runtime array immutable.
+ */
+const adapterEnum = z.enum([...VENDOR_NAMES] as [string, ...string[]]);
 
 export const shamuConfigSchema = z
   .object({
@@ -24,6 +63,12 @@ export const shamuConfigSchema = z
       })
       .default({ name: "default" }),
     vendors: z.record(z.string(), z.object({}).passthrough()).default({}),
+    /**
+     * Per-adapter configuration block — new in Phase 9.A. Keyed by
+     * `VendorName`; unknown keys raise. See `adapterConfigEntrySchema`
+     * for the per-entry shape.
+     */
+    adapters: z.record(adapterEnum, adapterConfigEntrySchema).default({}),
     paths: z
       .object({
         state: z.string().default(".shamu"),

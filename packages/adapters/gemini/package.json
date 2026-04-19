@@ -6,6 +6,7 @@
   "description": "Gemini AgentAdapter for Shamu. ACP-stdio variation of @shamu/adapter-cursor (Phase 7.C). Launches `gemini --acp` from @google/gemini-cli and projects ACP session/update notifications + session/request_permission round-trips into Shamu's AgentEvent stream. No runtime dependency on @google/gemini-cli (111 MB unpacked) — binary ships via `npm install -g @google/gemini-cli` and is resolved from vendorCliPath / GEMINI_CLI_PATH / PATH at spawn time. Known upstream issue: google-gemini/gemini-cli#22647 (non-ACP writes bleed into the JSON-RPC stream); malformed lines surface as AcpProtocolError → non-fatal `error` AgentEvent.",
   "exports": {
     ".": "./src/index.ts",
+    "./vendor-cli-descriptor": "./src/vendor-cli-descriptor.ts",
     "./capabilities.json": "./src/capabilities.json"
   },
   "scripts": {

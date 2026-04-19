@@ -40,3 +40,6 @@ export type {
   ScenarioContext,
   ScriptProbeId,
 } from "../contract/types.ts";
+
+export type { VendorCliResolverContractInput } from "./vendor-cli-resolver.contract.ts";
+export { runVendorCliResolverContract } from "./vendor-cli-resolver.contract.ts";

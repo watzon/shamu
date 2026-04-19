@@ -84,6 +84,7 @@ export {
   projectAmpLine,
   projectAmpMessage,
 } from "./projection.ts";
+export { ampVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 const DEFAULT_VENDOR = "amp";
 

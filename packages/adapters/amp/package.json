@@ -6,6 +6,7 @@
   "description": "Amp AgentAdapter for Shamu. Stream-JSON-shell variation of the Claude/Codex family (Phase 7.D). Long-lived `amp -x --stream-json --stream-json-input` subprocess: stdin stays open between turns (matches Claude/Codex shape and simplifies interrupt()). No runtime dependency on @sourcegraph/amp — binary ships via `npm install -g @sourcegraph/amp` and is resolved from vendorCliPath / AMP_CLI_PATH / Bun.which('amp') at spawn time. Resume via `amp threads continue <thread-id>`. Auth via AMP_API_KEY env (non-interactive) or pre-ran `amp login` (keychain-backed).",
   "exports": {
     ".": "./src/index.ts",
+    "./vendor-cli-descriptor": "./src/vendor-cli-descriptor.ts",
     "./capabilities.json": "./src/capabilities.json"
   },
   "scripts": {

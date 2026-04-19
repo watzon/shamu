@@ -13,6 +13,7 @@ import { loadConfig } from "../config.ts";
 import { ExitCode, type ExitCodeValue } from "../exit-codes.ts";
 import { ansiEnabled, writeHuman, writeJson } from "../output.ts";
 import { auditChainCheck } from "../services/doctor-audit-chain.ts";
+import { resolveClisCheck } from "../services/doctor-cli-resolver.ts";
 import { clockSkewCheck } from "../services/doctor-clock.ts";
 import { egressBrokerCheck } from "../services/doctor-egress.ts";
 import { tunnelScopeCheck } from "../services/doctor-tunnel-scope.ts";
@@ -38,6 +39,12 @@ export const doctorCommand = defineCommand({
   },
   args: {
     ...commonArgs,
+    "resolve-clis": {
+      type: "boolean",
+      description:
+        "Run the shared vendor-CLI resolver for every shipped adapter and report per-adapter source/version. Included by default alongside the audit-chain / egress / webhook / clock / tunnel checks.",
+      default: false,
+    },
   },
   async run({ args }): Promise<ExitCodeValue> {
     const mode = outputMode(args);
@@ -48,7 +55,8 @@ export const doctorCommand = defineCommand({
     checks.push(checkGit());
     checks.push(checkDocker());
     checks.push(checkPlatform());
-    checks.push(await checkConfig(args.config));
+    const configCheck = await loadConfigForDoctor(args.config);
+    checks.push(configCheck.check);
     checks.push(checkKeychain());
 
     // Phase-8.C real checks (audit chain, egress broker, clock, webhook,
@@ -60,6 +68,19 @@ export const doctorCommand = defineCommand({
     checks.push(await wrap("clock skew", clockSkewCheck()));
     checks.push(await wrap("webhook server", webhookServerCheck()));
     checks.push(wrapSync("tunnel scope", tunnelScopeCheck()));
+
+    // Phase 9.A vendor-CLI resolver. Always runs today — the boolean arg
+    // exists for forward-compat (a future --no-resolve-clis opt-out) and
+    // to be explicit in scripted JSON consumers.
+    const resolverSummary = await resolveClisCheck(
+      configCheck.config !== undefined ? { config: configCheck.config } : {},
+    );
+    checks.push({
+      name: "vendor CLI resolution",
+      ok: resolverSummary.ok,
+      status: resolverSummary.status,
+      detail: resolverSummary.detail,
+    });
 
     const anyFail = checks.some((c) => c.status === "fail");
 
@@ -73,12 +94,50 @@ export const doctorCommand = defineCommand({
           detail: c.detail,
         });
       }
+      // Emit one JSON event per adapter so downstream UIs can render the
+      // full trace without grep-parsing the human output. Gated on the
+      // resolver having actually run (it does today, but keep the guard
+      // in case a future --no-resolve-clis lands).
+      for (const ar of resolverSummary.adapters) {
+        writeJson(mode, {
+          kind: "cli-resolver",
+          adapter: ar.adapter,
+          ok: ar.ok,
+          severity: ar.severity,
+          ...(ar.path !== undefined ? { path: ar.path } : {}),
+          ...(ar.source !== undefined ? { source: ar.source } : {}),
+          ...(ar.version !== undefined ? { version: ar.version } : {}),
+          ...(ar.constraint !== undefined ? { constraint: ar.constraint } : {}),
+          detail: ar.detail,
+          checked: ar.checked,
+        });
+      }
       writeJson(mode, { kind: "doctor-summary", ok: !anyFail, total: checks.length });
     } else {
       writeHuman(mode, "shamu doctor");
       writeHuman(mode, "");
       for (const c of checks) {
         writeHuman(mode, `  ${glyph(c.status)}  ${pad(c.name, 22)}  ${c.detail}`);
+      }
+      // Per-adapter CLI-resolver lines so the operator sees which
+      // candidate won or which locations were checked on a miss.
+      if (resolverSummary.adapters.length > 0) {
+        writeHuman(mode, "");
+        writeHuman(mode, "  vendor CLIs:");
+        for (const ar of resolverSummary.adapters) {
+          const statusGlyph =
+            ar.severity === "pass"
+              ? glyph("pass")
+              : ar.severity === "warn"
+                ? glyph("todo")
+                : glyph("fail");
+          writeHuman(mode, `    ${statusGlyph}  ${pad(ar.adapter, 10)}  ${ar.detail}`);
+          if (ar.severity !== "pass" && ar.checked.length > 0) {
+            for (const checked of ar.checked) {
+              writeHuman(mode, `        - ${checked}`);
+            }
+          }
+        }
       }
       writeHuman(mode, "");
       writeHuman(mode, anyFail ? "result: one or more checks failed." : "result: all checks ok.");
@@ -187,19 +246,33 @@ function checkPlatform(): CheckResult {
   };
 }
 
-async function checkConfig(explicit: string | undefined): Promise<CheckResult> {
+/**
+ * Load the config once and return BOTH the doctor CheckResult and the
+ * parsed value (for the resolver check downstream). On failure the
+ * config is undefined and the resolver will use defaults. Replaces the
+ * prior single-purpose `checkConfig` helper — the resolver check needs
+ * the parsed config, and it would be wasteful to reload it.
+ */
+async function loadConfigForDoctor(
+  explicit: string | undefined,
+): Promise<{ check: CheckResult; config?: import("../config.ts").ShamuConfig }> {
   const params: Parameters<typeof loadConfig>[0] = {};
   if (explicit !== undefined) params.explicitPath = explicit;
   const result = await loadConfig(params);
   if (result.ok) {
     const where = result.source ?? "defaults (no shamu.config.ts found)";
-    return { name: "config", ok: true, status: "pass", detail: `loaded: ${where}` };
+    return {
+      check: { name: "config", ok: true, status: "pass", detail: `loaded: ${where}` },
+      config: result.value,
+    };
   }
   return {
-    name: "config",
-    ok: false,
-    status: "fail",
-    detail: `${result.error.kind}: ${result.error.message}`,
+    check: {
+      name: "config",
+      ok: false,
+      status: "fail",
+      detail: `${result.error.kind}: ${result.error.message}`,
+    },
   };
 }
 

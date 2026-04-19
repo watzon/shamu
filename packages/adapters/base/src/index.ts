@@ -22,6 +22,7 @@ export * from "./replay.ts";
 export * from "./shell-gate.ts";
 export * from "./subprocess.ts";
 export * from "./tool-result.ts";
+export * from "./vendor-cli-resolver.ts";
 
 // Contract suite is a named subpath import (`@shamu/adapters-base/contract`)
 // so test suites don't accidentally pull the scenarios into production code.

@@ -91,6 +91,7 @@ export {
   type ProjectionState,
   projectOpencodeEvent,
 } from "./projection.ts";
+export { opencodeVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 const DEFAULT_VENDOR = "opencode";
 

@@ -20,9 +20,14 @@
     "clean": "rm -rf dist coverage .turbo"
   },
   "dependencies": {
+    "@shamu/adapter-amp": "workspace:*",
     "@shamu/adapter-claude": "workspace:*",
     "@shamu/adapter-codex": "workspace:*",
+    "@shamu/adapter-cursor": "workspace:*",
     "@shamu/adapter-echo": "workspace:*",
+    "@shamu/adapter-gemini": "workspace:*",
+    "@shamu/adapter-opencode": "workspace:*",
+    "@shamu/adapter-pi": "workspace:*",
     "@shamu/adapters-base": "workspace:*",
     "@shamu/core-composition": "workspace:*",
     "@shamu/core-flow": "workspace:*",

@@ -1,108 +1,47 @@
 /**
- * Unit tests for `resolveClaudeCliPath` — the four-source precedence chain
- * the `shamu run --adapter=claude` bootstrap uses to decide which binary
- * to pass as `vendorCliPath`.
+ * Unit tests for `buildClaudeLastChance` — the thin wrapper that adapts
+ * `ensureClaudeSidecar()` into the `VendorCliResolverInput.lastChance`
+ * hook shape expected by `resolveVendorCli`.
  *
- * Precedence under test:
- *   explicit > env > sidecar > path
- *
- * All tests inject `ensureSidecar` explicitly so no vendor SDK work runs.
+ * The old `resolveClaudeCliPath` precedence chain (Phase 8.C.2) collapsed
+ * into the shared resolver in Phase 9.A. The only logic this file owns
+ * today is "sidecar returns a path" vs "sidecar throws" — precedence is
+ * covered by the vendor-CLI resolver suite.
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { resolveClaudeCliPath } from "../../src/services/claude-sidecar-bootstrap.ts";
+import { buildClaudeLastChance } from "../../src/services/claude-sidecar-bootstrap.ts";
 
-describe("resolveClaudeCliPath", () => {
-  it("returns source=explicit when `explicit` is provided, ignoring env and sidecar", async () => {
-    const ensureSidecar = vi.fn();
-    const res = await resolveClaudeCliPath({
-      explicit: "/opt/claude",
-      env: { CLAUDE_CLI_PATH: "/ignored/path" },
-      ensureSidecar: async (opts) => {
-        ensureSidecar(opts);
-        return { path: "/also/ignored", version: "x" };
-      },
-    });
-    expect(res).toEqual({ source: "explicit", path: "/opt/claude" });
-    expect(ensureSidecar).not.toHaveBeenCalled();
-  });
-
-  it("returns source=env when CLAUDE_CLI_PATH is set and no explicit is provided", async () => {
-    const ensureSidecar = vi.fn();
-    const res = await resolveClaudeCliPath({
-      env: { CLAUDE_CLI_PATH: "/env/claude" },
-      ensureSidecar: async (opts) => {
-        ensureSidecar(opts);
-        return { path: "/also/ignored", version: "x" };
-      },
-    });
-    expect(res).toEqual({ source: "env", path: "/env/claude" });
-    expect(ensureSidecar).not.toHaveBeenCalled();
-  });
-
-  it("returns source=sidecar when explicit and env are absent", async () => {
-    const res = await resolveClaudeCliPath({
-      env: {},
+describe("buildClaudeLastChance", () => {
+  it("returns the sidecar path when ensureSidecar resolves", async () => {
+    const lastChance = buildClaudeLastChance({
       ensureSidecar: async () => ({ path: "/cache/claude", version: "1.2.3" }),
     });
-    expect(res).toEqual({
-      source: "sidecar",
-      path: "/cache/claude",
-      version: "1.2.3",
-    });
+    const result = await lastChance();
+    expect(result).toBe("/cache/claude");
   });
 
-  it("falls through to PATH when sidecar bootstrap throws and fallthroughOnSidecarError is default", async () => {
+  it("propagates the sidecar error after invoking onSidecarError", async () => {
     const onSidecarError = vi.fn();
-    const res = await resolveClaudeCliPath({
-      env: {},
+    const lastChance = buildClaudeLastChance({
       ensureSidecar: async () => {
-        throw new Error("boom");
+        throw new Error("network down");
       },
       onSidecarError,
     });
-    expect(res).toEqual({ source: "path", path: null });
+    await expect(lastChance()).rejects.toThrow(/network down/);
     expect(onSidecarError).toHaveBeenCalledOnce();
-    const args = onSidecarError.mock.calls[0] ?? [];
-    const firstArg = args[0];
+    const firstArg = onSidecarError.mock.calls[0]?.[0];
     expect(firstArg).toBeInstanceOf(Error);
-    expect((firstArg as Error).message).toBe("boom");
+    expect((firstArg as Error).message).toBe("network down");
   });
 
-  it("re-throws the sidecar error when fallthroughOnSidecarError=false", async () => {
-    await expect(
-      resolveClaudeCliPath({
-        env: {},
-        ensureSidecar: async () => {
-          throw new Error("network down");
-        },
-        fallthroughOnSidecarError: false,
-      }),
-    ).rejects.toThrow(/network down/);
-  });
-
-  it("returns source=path with null path when no ensureSidecar is provided and nothing earlier matches", async () => {
-    const res = await resolveClaudeCliPath({ env: {} });
-    expect(res).toEqual({ source: "path", path: null });
-  });
-
-  it("treats an empty-string explicit as absent", async () => {
-    const res = await resolveClaudeCliPath({
-      explicit: "",
-      env: { CLAUDE_CLI_PATH: "/env/claude" },
+  it("propagates the sidecar error when no onSidecarError hook is supplied", async () => {
+    const lastChance = buildClaudeLastChance({
+      ensureSidecar: async () => {
+        throw new Error("boom");
+      },
     });
-    expect(res).toEqual({ source: "env", path: "/env/claude" });
-  });
-
-  it("treats an empty-string CLAUDE_CLI_PATH as absent", async () => {
-    const res = await resolveClaudeCliPath({
-      env: { CLAUDE_CLI_PATH: "" },
-      ensureSidecar: async () => ({ path: "/cache/claude", version: "1" }),
-    });
-    expect(res).toEqual({
-      source: "sidecar",
-      path: "/cache/claude",
-      version: "1",
-    });
+    await expect(lastChance()).rejects.toThrow(/boom/);
   });
 });

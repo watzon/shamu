@@ -1,93 +1,62 @@
 /**
- * Resolve the Claude CLI path for a given run, threading the four-source
- * precedence the CLI promises:
+ * Claude sidecar bootstrap — `lastChance` wrapper for `resolveVendorCli`.
  *
- *   1. Explicit override (`--claude-cli <path>` on `shamu run`).
- *   2. `$CLAUDE_CLI_PATH` environment variable.
- *   3. Sidecar bootstrap — `ensureClaudeSidecar()` from
- *      `@shamu/adapter-claude`, which lazy-downloads the pinned Claude
- *      binary on first run.
- *   4. PATH fallback — return `null` and let the vendor SDK's default
- *      lookup (which ultimately consults `PATH`) run.
+ * Phase 9.A collapsed the old `resolveClaudeCliPath` (which had its own
+ * precedence chain: `--claude-cli` → `$CLAUDE_CLI_PATH` → sidecar →
+ * PATH) into the shared `resolveVendorCli` resolver. The sidecar
+ * bootstrap — `ensureClaudeSidecar()` from `@shamu/adapter-claude`, which
+ * lazy-downloads a pinned Claude binary on first run — now runs as the
+ * Claude descriptor's `lastChance` hook. That way the sidecar bootstrap
+ * fires only when every on-disk candidate misses, and the network I/O
+ * doesn't burden users who already have `claude` installed globally.
  *
- * The returned `source` field lets callers emit a diag explaining which
- * branch fired, which is what `shamu doctor` (sibling track 8.C.1) will
- * surface to the operator. See the parallel 8.C.1 track for the doctor-
- * side wiring — this module stays out of `doctor.ts` so the two tracks
- * can land independently.
+ * See `packages/adapters/base/src/vendor-cli-resolver.ts` for the
+ * resolver contract, `packages/adapters/claude/src/sidecar.ts` for the
+ * bootstrap itself.
  */
 
 import type { EnsureClaudeSidecarOptions, EnsureClaudeSidecarResult } from "@shamu/adapter-claude";
 
-export type ClaudeCliSource = "explicit" | "env" | "sidecar" | "path";
+export type EnsureSidecarFn = (
+  opts: EnsureClaudeSidecarOptions,
+) => Promise<EnsureClaudeSidecarResult>;
 
-export interface ResolveClaudeCliResult {
-  /** Which branch of the precedence chain fired. */
-  readonly source: ClaudeCliSource;
+export interface BuildClaudeLastChanceInput {
   /**
-   * Path to the Claude CLI binary. For `source: "path"` this is `null`;
-   * the caller should pass the SpawnOpts through without `vendorCliPath`
-   * and let the SDK resolve the binary via `PATH`.
+   * Injection seam — production passes the real `ensureClaudeSidecar`
+   * imported lazily from `@shamu/adapter-claude`. Tests pass a scripted
+   * fake.
    */
-  readonly path: string | null;
+  readonly ensureSidecar: EnsureSidecarFn;
   /**
-   * Version string reported by the sidecar resolver. Only populated for
-   * `source: "sidecar"`; `undefined` otherwise. Useful for diags.
-   */
-  readonly version?: string;
-}
-
-export interface ResolveClaudeCliInput {
-  readonly explicit?: string;
-  readonly env?: NodeJS.ProcessEnv;
-  /**
-   * Injection seam — production passes the real
-   * `ensureClaudeSidecar` from `@shamu/adapter-claude`; unit tests pass
-   * a scripted fake.
-   */
-  readonly ensureSidecar?: (opts: EnsureClaudeSidecarOptions) => Promise<EnsureClaudeSidecarResult>;
-  /**
-   * If `ensureSidecar` throws, by default we fall through to PATH (so a
-   * bad network doesn't break a developer with `claude` already on PATH).
-   * Tests pass `false` to see the error.
-   */
-  readonly fallthroughOnSidecarError?: boolean;
-  /**
-   * Optional diag hook for bootstrap failures. The CLI wires this to
-   * `writeDiag` so the operator sees why the fall-through happened.
+   * Optional diag hook for bootstrap failures. When the sidecar download
+   * throws, we let the resolver swallow the error and fall through to
+   * `VendorCliNotFoundError`, but operators need to see why — this hook
+   * is the wire for the CLI's `writeDiag`.
    */
   readonly onSidecarError?: (err: unknown) => void;
 }
 
-export async function resolveClaudeCliPath(
-  input: ResolveClaudeCliInput = {},
-): Promise<ResolveClaudeCliResult> {
-  const env = input.env ?? process.env;
-
-  // 1. Explicit override.
-  if (input.explicit && input.explicit.length > 0) {
-    return { source: "explicit", path: input.explicit };
-  }
-
-  // 2. Env var.
-  const envPath = env.CLAUDE_CLI_PATH;
-  if (envPath && envPath.length > 0) {
-    return { source: "env", path: envPath };
-  }
-
-  // 3. Sidecar bootstrap.
-  if (input.ensureSidecar) {
+/**
+ * Build the `lastChance` callback for `resolveVendorCli`.
+ *
+ * Returns a function that the resolver awaits only after every other
+ * candidate (explicit flag, env, config, known install paths, PATH) has
+ * missed. The function either returns the sidecar's cached/downloaded
+ * path, returns `null` (ensure-sidecar returned a path that doesn't
+ * exist, unlikely in practice), or throws — the resolver treats throws
+ * as "lastChance failed" and records the error into `.attempts`.
+ */
+export function buildClaudeLastChance(
+  input: BuildClaudeLastChanceInput,
+): () => Promise<string | null> {
+  return async () => {
     try {
       const out = await input.ensureSidecar({});
-      return { source: "sidecar", path: out.path, version: out.version };
+      return out.path;
     } catch (err) {
-      if (input.fallthroughOnSidecarError === false) {
-        throw err;
-      }
       input.onSidecarError?.(err);
+      throw err;
     }
-  }
-
-  // 4. PATH fallback.
-  return { source: "path", path: null };
+  };
 }

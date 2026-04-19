@@ -95,6 +95,7 @@ export {
   type ProjectionState,
   projectGeminiEvent,
 } from "./projection.ts";
+export { geminiVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 const DEFAULT_VENDOR = "gemini";
 

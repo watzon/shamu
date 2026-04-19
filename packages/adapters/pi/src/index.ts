@@ -108,6 +108,7 @@ export {
   type PiRpcClientOptions,
   type PiRpcTransport,
 } from "./rpc-client.ts";
+export { piVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 const DEFAULT_VENDOR = "pi";
 

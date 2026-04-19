@@ -81,6 +81,7 @@ export {
   type ProjectionState,
   projectCursorEvent,
 } from "./projection.ts";
+export { cursorVendorCliDescriptor } from "./vendor-cli-descriptor.ts";
 
 const DEFAULT_VENDOR = "cursor";
 
