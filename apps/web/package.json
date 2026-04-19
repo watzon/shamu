@@ -1,0 +1,27 @@
+{
+  "name": "@shamu/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shamu web dashboard — local-only Hono + SolidJS SPA for swarm overview + run detail with SSE live tail.",
+  "main": "./src/server/index.ts",
+  "scripts": {
+    "dev": "bun run build:client && bun --hot src/server/index.ts",
+    "build": "bun run build:client",
+    "build:client": "bun scripts/build-client.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/persistence": "workspace:*",
+    "@shamu/shared": "workspace:*",
+    "@solidjs/router": "0.16.1",
+    "hono": "4.12.14",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "bun-plugin-solid": "1.0.0"
+  }
+}
