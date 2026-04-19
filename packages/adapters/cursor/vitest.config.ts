@@ -7,9 +7,11 @@ export default defineConfig({
       junit: "./coverage/junit.xml",
     },
     // Live-vendor tests live under `test/live/*.live.test.ts` and opt in via
-    // `SHAMU_CURSOR_LIVE=1`. The default include excludes them.
+    // `SHAMU_CURSOR_LIVE=1`. Setting the env var flips the exclude off so the
+    // live suite is picked up by `bun run test`; the suite itself gates each
+    // case via `describe.skipIf(!LIVE)` for belt-and-braces.
     include: ["test/**/*.test.ts"],
-    exclude: ["test/live/**"],
+    exclude: process.env.SHAMU_CURSOR_LIVE === "1" ? [] : ["test/live/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "lcov", "json-summary"],
