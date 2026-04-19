@@ -52,9 +52,15 @@ export const shellAstGateScenario: Scenario = {
       return false;
     });
 
+    const probeScripted = ctx.scriptProbeSupported("shell-gate");
     if (!rejection) {
+      if (probeScripted) {
+        throw new Error(
+          "shell-ast-gate: adapter declared scriptProbe('shell-gate') === true but the probe prompt produced no visible rejection. Either the fake driver did not emit a rule-breaking bash tool-call, or the adapter's shell gate did not fire. Both are contract violations (G5).",
+        );
+      }
       ctx.log.warn(
-        "shell-ast-gate: probe prompt did not trigger a visible rejection — the adapter-under-test's fake driver may not script a `$()` command probe; confirm via the adapter's unit tests that validateShellCommand is wired at dispatch time",
+        "shell-ast-gate: probe prompt did not trigger a visible rejection — the adapter-under-test did not declare scriptProbe('shell-gate'); confirm via the adapter's unit tests that validateShellCommand is wired at dispatch time",
       );
       return;
     }

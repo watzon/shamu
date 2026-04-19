@@ -12,7 +12,8 @@
     "packages/adapters/*",
     "packages/core/*",
     "packages/flows/*",
-    "packages/linear/*"
+    "packages/linear/*",
+    "packages/protocol/*"
   ],
   "scripts": {
     "lint": "biome check .",

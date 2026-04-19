@@ -1,0 +1,19 @@
+{
+  "name": "@shamu/protocol-acp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent Client Protocol (ACP) client library for Shamu. JSON-RPC 2.0 over a pluggable transport (newline-delimited stdio today; HTTP-ACP if/when it lands). Consumed by @shamu/adapter-cursor (7.B) and @shamu/adapter-gemini (7.C); a future Phase 8 A2A bridge may also speak ACP directly. The protocol package owns framing + method dictionary + id correlation; adapters own auth method names, capability declarations, and permission policy.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/shared": "workspace:*"
+  }
+}

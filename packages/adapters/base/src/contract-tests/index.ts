@@ -38,4 +38,5 @@ export type {
   ContractLogger,
   ContractSuiteOptions,
   ScenarioContext,
+  ScriptProbeId,
 } from "../contract/types.ts";

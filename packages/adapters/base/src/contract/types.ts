@@ -41,6 +41,14 @@ export interface ScenarioContext {
    * inject something quieter.
    */
   readonly log: ContractLogger;
+  /**
+   * Query whether the adapter-under-test's fake driver scripts a named
+   * probe (see `ScriptProbeId`). Scenarios that target a G4/G5 probe use
+   * this to flip between warn-only (legacy) and fail-loud (modern)
+   * assertions. Returns `false` when the adapter didn't declare
+   * `scriptProbe` at all, or when it declared the probe as unsupported.
+   */
+  readonly scriptProbeSupported: (probe: ScriptProbeId) => boolean;
 }
 
 export interface ContractLogger {
@@ -78,7 +86,39 @@ export interface AdapterUnderTest {
   readonly worktreeFor: (scenarioName: string) => Promise<string>;
   /** Optional: opt out of specific scenarios by name. */
   readonly skip?: readonly string[];
+  /**
+   * Opt-in fake-driver probe declaration for the path-scope and shell-AST
+   * scenarios (G4 / G5). Adapters whose fake driver DOES script a synthetic
+   * rule-breaking tool-call in response to the probe prompt should declare
+   * the supported probe ids here — the scenario switches from warn-only to
+   * fail-loud when a probe is declared supported.
+   *
+   * Defaulting `scriptProbe` to `undefined` preserves the existing
+   * warn-only behavior for echo / claude / codex / opencode; their unit
+   * tests cover the gate directly, so the contract suite warning is the
+   * correct signal. Phase 7.G's capability-matrix work may migrate those
+   * drivers to `scriptProbe` en masse.
+   *
+   * Introduced Phase 7.B (2026-04-18). See
+   * `packages/adapters/base/src/contract/scenarios/path-scope-dispatch.ts`
+   * and `.../shell-ast-gate.ts` for the consumer sites.
+   */
+  readonly scriptProbe?: (probe: ScriptProbeId) => boolean;
 }
+
+/**
+ * Probe ids recognized by `AdapterUnderTest.scriptProbe`. Current set:
+ *
+ * - `"path-scope"` — `PATH_SCOPE_ESCAPE_TURN` is sent; the fake driver must
+ *   script a Write/Edit tool-call whose target escapes the worktree.
+ * - `"shell-gate"` — `SHELL_SUBSTITUTION_TURN` is sent; the fake driver must
+ *   script a Bash tool-call with `$()` command substitution.
+ *
+ * Expansion rule: new probes are introduced as additive union members.
+ * Adapters that already declare `scriptProbe` continue to opt into only the
+ * probes they advertise.
+ */
+export type ScriptProbeId = "path-scope" | "shell-gate";
 
 export interface ContractSuiteOptions {
   /** Per-scenario timeout in ms. Default 30000. */

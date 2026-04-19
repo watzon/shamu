@@ -18,10 +18,16 @@
  *    tool call.
  * 3. The stream emits no `patch_applied` referencing the offending path.
  *
- * Adapters whose driver double does NOT script the probe response will see
- * no violation in the stream; we WARN rather than fail so the contract
- * suite remains adapter-agnostic. Adapters SHOULD wire the probe — the
- * scenario's value is checking the full rejection pipeline on the wire.
+ * ### Warn-only vs fail-loud (Phase 7.B opt-in)
+ *
+ * An adapter-under-test can declare `scriptProbe("path-scope") === true` to
+ * promise that its fake driver schedules a rule-breaking tool-call in
+ * response to the probe. When that promise is made, this scenario fails
+ * LOUD if no rejection is observed — a missing G4 gate is a contract
+ * violation, not a driver gap. When the adapter doesn't declare the probe
+ * (echo / claude / codex / opencode today; Phase 7.G may migrate them), we
+ * emit a warning instead so downstream adapters whose drivers aren't wired
+ * for the probe can still participate in the contract suite.
  *
  * Requires: `streamingEvents` — adapters that only emit final-only streams
  * can't demonstrate mid-turn rejection.
@@ -54,13 +60,15 @@ export const pathScopeDispatchScenario: Scenario = {
       return false;
     });
 
-    // An adapter whose driver doesn't script the probe emits no violation.
-    // We allow this to pass-with-warn because the contract suite is
-    // adapter-agnostic; the adapter's own unit tests are responsible for
-    // covering the permission-handler logic directly.
+    const probeScripted = ctx.scriptProbeSupported("path-scope");
     if (!rejection) {
+      if (probeScripted) {
+        throw new Error(
+          "path-scope-dispatch: adapter declared scriptProbe('path-scope') === true but the probe prompt produced no visible rejection. Either the fake driver did not emit a rule-breaking tool-call, or the adapter's permission handler did not fire. Both are contract violations (G4).",
+        );
+      }
       ctx.log.warn(
-        "path-scope-dispatch: probe prompt did not trigger a visible rejection — the adapter-under-test's fake driver may not script the probe; confirm via the adapter's unit tests that validatePathInWorktree is wired at dispatch time",
+        "path-scope-dispatch: probe prompt did not trigger a visible rejection — the adapter-under-test did not declare scriptProbe('path-scope'); confirm via the adapter's unit tests that validatePathInWorktree is wired at dispatch time",
       );
       return;
     }

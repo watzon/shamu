@@ -69,6 +69,15 @@
         "@shamu/shared": "workspace:*",
       },
     },
+    "packages/adapters/cursor": {
+      "name": "@shamu/adapter-cursor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@shamu/adapters-base": "workspace:*",
+        "@shamu/protocol-acp": "workspace:*",
+        "@shamu/shared": "workspace:*",
+      },
+    },
     "packages/adapters/echo": {
       "name": "@shamu/adapter-echo",
       "version": "0.0.0",
@@ -193,6 +202,13 @@
     },
     "packages/persistence": {
       "name": "@shamu/persistence",
+      "version": "0.0.0",
+      "dependencies": {
+        "@shamu/shared": "workspace:*",
+      },
+    },
+    "packages/protocol/acp": {
+      "name": "@shamu/protocol-acp",
       "version": "0.0.0",
       "dependencies": {
         "@shamu/shared": "workspace:*",
@@ -384,6 +400,8 @@
 
     "@shamu/adapter-codex": ["@shamu/adapter-codex@workspace:packages/adapters/codex"],
 
+    "@shamu/adapter-cursor": ["@shamu/adapter-cursor@workspace:packages/adapters/cursor"],
+
     "@shamu/adapter-echo": ["@shamu/adapter-echo@workspace:packages/adapters/echo"],
 
     "@shamu/adapter-opencode": ["@shamu/adapter-opencode@workspace:packages/adapters/opencode"],
@@ -411,6 +429,8 @@
     "@shamu/mailbox": ["@shamu/mailbox@workspace:packages/mailbox"],
 
     "@shamu/persistence": ["@shamu/persistence@workspace:packages/persistence"],
+
+    "@shamu/protocol-acp": ["@shamu/protocol-acp@workspace:packages/protocol/acp"],
 
     "@shamu/shared": ["@shamu/shared@workspace:packages/shared"],
 

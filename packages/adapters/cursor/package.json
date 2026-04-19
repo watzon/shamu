@@ -1,0 +1,22 @@
+{
+  "name": "@shamu/adapter-cursor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cursor AgentAdapter for Shamu. ACP-stdio reference adapter (Phase 7.B). Launches `cursor-agent acp` and projects ACP session/update notifications + session/request_permission round-trips into Shamu's AgentEvent stream. Cursor Desktop ships the binary at ~/.local/bin/agent; override via vendorCliPath or CURSOR_AGENT_PATH.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./capabilities.json": "./src/capabilities.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage .turbo"
+  },
+  "dependencies": {
+    "@shamu/adapters-base": "workspace:*",
+    "@shamu/protocol-acp": "workspace:*",
+    "@shamu/shared": "workspace:*"
+  }
+}

@@ -114,6 +114,8 @@ export function runAdapterContractSuite(
             helloTurn: HELLO_TURN,
             timeoutMs,
             log,
+            scriptProbeSupported: (probe: import("./types.ts").ScriptProbeId): boolean =>
+              aut.scriptProbe ? aut.scriptProbe(probe) : false,
           };
           const handle = await aut.factory(ctx);
           try {
