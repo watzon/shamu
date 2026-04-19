@@ -20,7 +20,8 @@
       "!**/.agent-ci",
       "!**/bun.lock",
       "!**/package-lock.json",
-      "!docs/phase-0"
+      "!docs/phase-0",
+      "!.claude/worktrees/**"
     ]
   },
   "formatter": {
