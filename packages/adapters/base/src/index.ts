@@ -11,6 +11,7 @@
 
 export * from "./adapter.ts";
 export * from "./capabilities.ts";
+export * from "./capability-matrix.ts";
 export * from "./correlation.ts";
 export * from "./cost-stamping.ts";
 export * from "./errors.ts";

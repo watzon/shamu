@@ -9,6 +9,7 @@
     "./adapter": "./src/adapter.ts",
     "./events": "./src/events.ts",
     "./capabilities": "./src/capabilities.ts",
+    "./capability-matrix": "./src/capability-matrix.ts",
     "./subprocess": "./src/subprocess.ts",
     "./path-scope": "./src/path-scope.ts",
     "./shell-gate": "./src/shell-gate.ts",

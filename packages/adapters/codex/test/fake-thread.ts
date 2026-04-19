@@ -266,6 +266,66 @@ export function patchScript(_input: string): ThreadEvent[] {
   ];
 }
 
+/**
+ * Path-scope probe script (contract `path-scope-dispatch`, G4). Emits an
+ * `item.started` for a `file_change` that targets an absolute path
+ * outside the worktree; the CodexHandle's `decidePermission` reception
+ * short-circuits the turn with an `error` event and aborts, which is the
+ * visible rejection the contract scenario scans for.
+ *
+ * Phase 7.G migration (2026-04-19): the codex `test/contract.test.ts`
+ * declares `scriptProbe('path-scope') === true` so the suite runs
+ * fail-loud — a missing G4 gate is a contract violation, not a driver
+ * gap. The fake driver's responsibility is just to feed the adapter a
+ * rule-breaking `item.started`.
+ */
+export function pathScopeProbeScript(_input: string): ThreadEvent[] {
+  return [
+    { type: "thread.started", thread_id: "thr_path_scope_0001" },
+    { type: "turn.started" },
+    {
+      type: "item.started",
+      item: {
+        id: "item_ps_0",
+        type: "file_change",
+        changes: [{ path: "/etc/shamu_contract_probe.txt", kind: "add" }],
+        // FileChangeItem's `status` is `"completed" | "failed"`; there's
+        // no "in_progress" state because the SDK emits `item.started` for
+        // file_change only once the patch is done. The probe's G4 gate
+        // fires on the path regardless of status — we pick "failed" to
+        // reflect that we never expect the write to land.
+        status: "failed",
+      },
+    },
+    // No turn.completed: the handle aborts the turn once the gate fires,
+    // synthesizing its own `turn_end`. Emitting a terminal here would
+    // double-emit.
+  ];
+}
+
+/**
+ * Shell-gate probe script (contract `shell-ast-gate`, G5). Emits an
+ * `item.started` for a `command_execution` whose `command` contains
+ * `$()` command substitution; the handle's shell-AST gate rejects it
+ * before the CLI runs it.
+ */
+export function shellGateProbeScript(_input: string): ThreadEvent[] {
+  return [
+    { type: "thread.started", thread_id: "thr_shell_gate_0001" },
+    { type: "turn.started" },
+    {
+      type: "item.started",
+      item: {
+        id: "item_sg_0",
+        type: "command_execution",
+        command: "echo $(whoami)",
+        aggregated_output: "",
+        status: "in_progress",
+      },
+    },
+  ];
+}
+
 /** Forced-fail canonical stream (error-surfaces scenario). */
 export function failScript(_input: string): ThreadEvent[] {
   return [

@@ -43,6 +43,12 @@ const aut: AdapterUnderTest = {
     mkdirSync(dir, { recursive: true });
     return dir;
   },
+  // Phase 7.G migration: the echo `chooseScript` wires both G4 and G5
+  // probes to synthetic `permission_request: deny` + `error` scripts so
+  // the contract suite can run fail-loud across the stub adapter too.
+  // Echo has no real permission handler — the `scriptProbe` promise is
+  // about driver-side visibility of a rejection, not real enforcement.
+  scriptProbe: (probe) => probe === "path-scope" || probe === "shell-gate",
 };
 
 runAdapterContractSuite(aut, { timeoutMs: 5_000 });
