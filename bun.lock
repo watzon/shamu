@@ -39,6 +39,14 @@
         "zod": "4.1.13",
       },
     },
+    "packages/adapters/amp": {
+      "name": "@shamu/adapter-amp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@shamu/adapters-base": "workspace:*",
+        "@shamu/shared": "workspace:*",
+      },
+    },
     "packages/adapters/base": {
       "name": "@shamu/adapters-base",
       "version": "0.0.0",
@@ -404,6 +412,8 @@
     "@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.0.0-rc.15", "", { "os": "win32", "cpu": "x64" }, "sha512-3P2A8L+x75qavWLe/Dll3EYBJLQmtkJN8rfh+U/eR3MqMgL/h98PhYI+JFfXuDPgPeCB7iZAKiqii5vqOvnA0g=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-rc.15", "", {}, "sha512-UromN0peaE53IaBRe9W7CjrZgXl90fqGpK+mIZbA3qSTeYqg3pqpROBdIPvOG3F5ereDHNwoHBI2e50n1BDr1g=="],
+
+    "@shamu/adapter-amp": ["@shamu/adapter-amp@workspace:packages/adapters/amp"],
 
     "@shamu/adapter-claude": ["@shamu/adapter-claude@workspace:packages/adapters/claude"],
 
