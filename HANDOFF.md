@@ -1,12 +1,12 @@
 # Shamu — Session Handoff
 
-**Last updated:** 2026-04-19 (Phase 7 closed: all tracks landed — 5 adapters, ACP protocol package, egress broker, shared harness, capability matrix, web dashboard MVP. Ready for Phase 8 kickoff.)
+**Last updated:** 2026-04-19 (Phase 8 warm-ups landed: egress-broker composition wiring + `shamu ui` CLI command. Ready for Phase 8.A + 8.B.)
 
 Any fresh session starts here. Load the `shamu-dev` skill (`.claude/skills/shamu-dev/SKILL.md`) for the full pipeline; this file is the snapshot of where we are right now.
 
 ## TL;DR
 
-Phase 7 is done. All 8 planned tracks (7.A–7.E adapters, 7.G capability matrix, 7.H web dashboard MVP, 7.I egress broker) plus the shared-harness refactor have landed on `main`. The contract suite fans across 8 adapters as a CI matrix job (`contract:<vendor>`) on every PR; `CI / ubuntu-latest` remains the sole branch-protection required check. Echo/claude/codex fake drivers now declare `scriptProbe: true` for fail-loud G4/G5 probes; OpenCode deliberately stays warn-only (SSE-HTTP + per-turn cancel hook doesn't match the shared harness). The web dashboard (`apps/web`) is Hono + SolidJS, 127.0.0.1-bound, reads the CLI's SQLite DB directly, and renders swarm overview + run detail with live SSE tail — MVP only; DAG viz, diff viewer, CI viewer, cost charts are deferred follow-ons. 27 workspace packages. Three live smokes locally runnable (Cursor, OpenCode, Pi); Amp + Gemini still gated on vendor side (paid credits / Google ToS).
+Phase 7 is done; both pre-8.A warm-ups have landed. `SpawnOpts.env` is now part of the adapter contract (threaded through every subprocess-owning adapter; OpenCode + echo accept-and-ignore by documentation). `@shamu/core-composition` exports `withEgressBroker({ policy, baseSpawnOpts, onEvent? })` — one call spins up a per-run broker, merges `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` onto SpawnOpts, and returns an idempotent `shutdown()`. `shamu ui` is now real: it boots `@shamu/web`'s server in-process, opens the browser, and exits cleanly on SIGTERM. Phase 8.A autonomy posture is unblocked (broker is one call away) and Phase 7.H has a user-facing entrypoint. 27 workspace packages. The contract suite still fans across 8 adapters as a CI matrix (`contract:<vendor>`) on every PR; `CI / ubuntu-latest` remains the sole branch-protection required check. Three live smokes locally runnable (Cursor, OpenCode, Pi); Amp + Gemini still gated on vendor side (paid credits / Google ToS).
 
 ## Key commits
 
@@ -22,6 +22,8 @@ Phase 7 is done. All 8 planned tracks (7.A–7.E adapters, 7.G capability matrix
 - #23 skill(shamu-dev): tighten parallel-agent git-safety rules
 - #24 7.G capability matrix + CI adapter fan-out + scriptProbe migration
 - #25 7.H web dashboard MVP (`@shamu/web`)
+- #27 chore: wire `shamu ui` to `@shamu/web` + open browser
+- #28 chore: wire `@shamu/egress-broker` into `@shamu/core-composition`
 
 ## Status
 
@@ -39,6 +41,8 @@ Phase 7 is done. All 8 planned tracks (7.A–7.E adapters, 7.G capability matrix
 | 7.I | Egress broker | ✅ (#20) |
 | Shared harness refactor | Cursor/Gemini/Amp/Pi → `@shamu/adapters-base` | ✅ (#21) |
 | Post-7.A-E fix PRs | #18 #19 | ✅ |
+| Pre-8.A warm-up | Egress-broker composition wiring + SpawnOpts.env | ✅ (#28) |
+| Pre-8.A warm-up | `shamu ui` CLI command | ✅ (#27) |
 
 ## What's in flight
 
@@ -50,15 +54,11 @@ Nothing.
 
 ## Phase 8 kickoff
 
-Phase 7 exit criteria met; Phase 8 tracks are now unblocked:
+Warm-ups cleared (#27 + #28); Phase 8 tracks are fully unblocked:
 
-1. **8.A — Autonomous loop** (Parallel). Daemon subscribes to Linear webhooks, picks up `shamu:ready` issues, runs canonical flow. Rate limiter, graceful shutdown, 24h soak test. Gate: G2/G3/G4/G6/G7 all green (they are).
+1. **8.A — Autonomous loop** (Parallel). Daemon subscribes to Linear webhooks, picks up `shamu:ready` issues, runs canonical flow. Rate limiter, graceful shutdown, 24h soak test. Broker wiring now composable via `withEgressBroker` in `@shamu/core-composition`. Gate: G2/G3/G4/G6/G7 all green.
 2. **8.B — A2A server** (Parallel with 8.A; v1 scope per 2026-04-18 decision). `packages/protocol/a2a`: Signed Agent Cards + JSON-RPC + SSE + bearer auth. Gate: G11 (A2A trust roots).
-3. **8.C — Ops polish** (Serial after 8.A). `shamu doctor`, `bun build --compile` single-binary, Claude 200MB sidecar bootstrap, `shamu ui` command (wires CLI to `apps/web`), screenshot CI, containerized egress enforcement replacing the in-process broker.
-
-Pre-8.A warm-ups (can interleave):
-- **Egress-broker adapter wiring** (follow-on from #20) — plumb `createEgressBroker` into `@shamu/core-composition` for per-spawn broker lifecycle + `HTTPS_PROXY`/`HTTP_PROXY` env injection in `SpawnOpts.env`. Small, self-contained, gates 8.A's autonomy posture.
-- **`shamu ui` CLI command** (from 7.H followups) — shell out to `apps/web/src/server/index.ts` + `open` the browser. Trivial wire-up; good smoke test of 7.H in anger.
+3. **8.C — Ops polish** (Serial after 8.A). `shamu doctor` extensions, `bun build --compile` single-binary, Claude 200MB sidecar bootstrap, screenshot CI, containerized egress enforcement replacing the in-process broker, real `--unsafe-bind` plumb-through + auth on the web dashboard. (`shamu ui` CLI wiring itself landed in #27; remaining 8.C UX polish is the non-loopback host story.)
 
 ## Followups
 
@@ -71,19 +71,28 @@ Pre-8.A warm-ups (can interleave):
 ### From PR #25 (web dashboard MVP)
 
 1. SolidJS component tests — add JSDOM + `@solidjs/testing-library` to the workspace; cover route rendering, connection-indicator states, event summarization.
-2. `shamu ui` CLI command wiring (listed under Phase 8 above).
-3. Overview-page live updates — MVP refetches on button-click; a single SSE channel for "new-run" events would keep the overview fresh.
-4. Paginate/virtualize the events list for long runs. Naive `<For>` over 10k events will degrade.
-5. CSS design-token hoisting to `packages/shared/format` when the TUI lands in Phase 3.
+2. Overview-page live updates — MVP refetches on button-click; a single SSE channel for "new-run" events would keep the overview fresh.
+3. Paginate/virtualize the events list for long runs. Naive `<For>` over 10k events will degrade.
+4. CSS design-token hoisting to `packages/shared/format` when the TUI lands in Phase 3.
 
-### From PR #20 (egress broker)
+### From PR #27 (`shamu ui` CLI command)
 
-1. Adapter wiring follow-on (per-spawn broker + proxy env injection) — see Phase 8 warm-ups above.
-2. Escalation-bus integration for `PolicyEgressDeniedEvent` (route into supervisor's escalation channel).
-3. TLS interception for payload inspection (Phase 8; per-run CA + subprocess trust-store + MITM rotation).
-4. Multi-run single-broker (per-connection policy tag via `Proxy-Authorization`).
-5. Shared host-matcher factoring — move `policy.ts`'s decision function into `@shamu/policy` so Phase 8's container enforcer imports the same code.
-6. Upstream-proxy chaining for corporate `HTTPS_PROXY`.
+1. `--unsafe-bind` is still documentation-only — real non-loopback support needs widened `ServerConfig.host` + auth + a Phase 8.C escape-hatch UX.
+2. Browser auto-launch is darwin + linux only; other platforms get a "please open manually" diag. Matches `shamu doctor`'s supported-platform set.
+3. `startServer` returns `{ url, server, config, stop }`. Later callers may want `ready` signals (SSE subscriber count, hot-reload hooks); not needed for current scope.
+
+### From PR #28 (egress-broker composition wiring)
+
+1. OpenCode SDK `ServerOptions.env` — thread `opts.env` through once upstream grows the field. Today OpenCode accepts-and-ignores with a documented no-op.
+2. Escalation-bus integration for `PolicyEgressDeniedEvent` (route into supervisor's escalation channel) — now trivially composable via `withEgressBroker`'s `onEvent` → `createEscalationEmitter`. Deferred to 8.A scope.
+3. `mergeCallerEnv` helper duplicated across five adapters (Cursor/Gemini/Amp/Pi + Claude/Codex variants). Could DRY into `@shamu/adapters-base` if a future phase adds another adapter; not worth the export-surface churn this track.
+
+### From PR #20 (egress broker — still open)
+
+1. TLS interception for payload inspection (Phase 8; per-run CA + subprocess trust-store + MITM rotation).
+2. Multi-run single-broker (per-connection policy tag via `Proxy-Authorization`).
+3. Shared host-matcher factoring — move `policy.ts`'s decision function into `@shamu/policy` so Phase 8's container enforcer imports the same code.
+4. Upstream-proxy chaining for corporate `HTTPS_PROXY`.
 
 ### From PR #21 (shared harness)
 
@@ -160,7 +169,9 @@ None blocking.
 - `packages/adapters/{cursor,gemini,amp,pi}/src/handle.ts` — thin vendor-specific deltas on the harness.
 - `packages/adapters/opencode/` — outlier; NOT on the shared harness.
 - `packages/egress-broker/` — network policy proxy.
-- `apps/web/` — web dashboard MVP (Hono + SolidJS + SSE; 127.0.0.1-bound).
+- `packages/core/composition/src/with-egress-broker.ts` — helper that spins up a per-run broker + merges proxy env onto SpawnOpts (Phase 8.A entry point).
+- `apps/web/` — web dashboard MVP (Hono + SolidJS + SSE; 127.0.0.1-bound). `startServer()` exported for CLI embedding.
+- `apps/cli/src/commands/ui.ts` — `shamu ui` CLI command (boots `@shamu/web` in-process, launches browser).
 - `.claude/skills/shamu-dev/SKILL.md` — pipeline.
 - `AGENTS.md` / `CLAUDE.md` — GitNexus-generated code context.
 

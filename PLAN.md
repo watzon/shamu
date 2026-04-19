@@ -859,4 +859,4 @@ None blocking. (Historical: A2A-in-v1 answered 2026-04-18; `vendorCliPath` Phase
 
 ## Immediate next step
 
-Phase 0 is 4/5 complete; 0.B awaits keys. Findings folded into PLAN.md. Ready to start Phase 1 scaffolding (Bun monorepo, SQLite schema with WAL + event log tables + HMAC-chained audit table, cross-platform credential backend, adapter base contract with path-scope/shell-AST/Node-backpressure helpers, stub adapter, CLI skeleton, `agent-ci.yml`) as soon as you approve.
+Phase 8 warm-ups cleared (#27 `shamu ui` + #28 egress-broker composition wiring). Phase 8.A (autonomous loop on Linear webhooks) and 8.B (A2A server) are both unblocked and can run in parallel. Broker wiring for 8.A is a single `withEgressBroker({ policy, baseSpawnOpts })` call from `@shamu/core-composition`. See HANDOFF.md for the live status table + carried followups.
